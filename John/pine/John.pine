@@ -6,9 +6,10 @@
 // Modules in this file:
 //   Swing tiers   · short-term, intermediate-term and long-term highs/lows (Spec Part 2.1–2.2)
 //   Liquidity map · BSL/SSL pools, equal highs/lows, raid vs run (Spec Part 3.1–3.3)
+//   Time map      · midnight day separators, day names, session boxes (Spec Part 1.2–1.3, 5.1)
 
 //@version=6
-indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500, max_lines_count = 500)
+indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
 
 // ════════════════════════════════════════════════════════════════════════════════
 // INPUTS
@@ -17,6 +18,8 @@ const string GRP_SWING = "Swing tiers (2022 Ep 12)"
 const string GRP_LIQ   = "Liquidity pools (Spec Part 3)"
 const string GRP_SESS  = "Session windows (New York time)"
 const string GRP_LSTY  = "Liquidity display"
+const string GRP_DAYS  = "Days of the week"
+const string GRP_BOX   = "Session boxes"
 
 int    swingLen   = input.int(1, "Short-term swing length", minval = 1, maxval = 5, group = GRP_SWING,
      tooltip = "Candles required on each side of a short-term high/low. 1 = ICT's classic 3-candle swing.")
@@ -48,6 +51,7 @@ int    reclaimBars = input.int(2, "Candles allowed to close back inside (raid vs
 string sessAsia = input.session("2000-0000", "Asian range",          group = GRP_SESS)
 string sessLdn  = input.session("0200-0500", "London Open killzone", group = GRP_SESS)
 string sessNY   = input.session("0700-1000", "New York killzone",    group = GRP_SESS)
+string sessLC   = input.session("1000-1200", "London Close killzone", group = GRP_SESS)
 
 color  colBSL      = input.color(#1E88E5, "Buyside liquidity (above highs)", group = GRP_LSTY)
 color  colSSL      = input.color(#E53935, "Sellside liquidity (below lows)", group = GRP_LSTY)
@@ -59,6 +63,34 @@ int    keepSwept   = input.int(10, "Swept pools kept on chart", minval = 0, maxv
 bool   showRaidX   = input.bool(true, "Mark raid wicks with an ✕", group = GRP_LSTY)
 bool   liqAlerts   = input.bool(true, "Alert on raids and runs", group = GRP_LSTY,
      tooltip = "Create an alert on this indicator with the condition \"Any alert() function call\" to receive these.")
+
+bool   showDaySep  = input.bool(true, "Midnight separators", group = GRP_DAYS, tooltip = "Drawn on charts below the daily timeframe.")
+bool   showDayName = input.bool(true, "Day names",           group = GRP_DAYS)
+string dayTz       = input.string("America/New_York", "Midnight of which timezone", options = ["America/New_York", "Europe/London", "UTC"], group = GRP_DAYS,
+     tooltip = "Calendar days, not trading days. ICT uses New York midnight.")
+string dayLoc      = input.string(location.top, "Day names at the", options = [location.top, location.bottom], group = GRP_DAYS)
+color  colDayName  = input.color(color.new(color.gray, 20), "Day name colour",  group = GRP_DAYS)
+color  colDaySep   = input.color(color.new(color.gray, 50), "Separator colour", group = GRP_DAYS)
+string daySepStyle = input.string(line.style_dotted, "Separator style", options = [line.style_solid, line.style_dotted, line.style_dashed], group = GRP_DAYS)
+int    keepDays    = input.int(30, "Days of separators and session boxes kept", minval = 1, maxval = 120, group = GRP_DAYS)
+
+bool   showBoxes = input.bool(true, "Show session boxes", group = GRP_BOX, tooltip = "Drawn on charts of 1 hour or lower. Each box spans the session window and its high-to-low range.")
+bool   boxAsia   = input.bool(true,  "", inline = "asia", group = GRP_BOX)
+string txtAsia   = input.string("Asia", "", inline = "asia", group = GRP_BOX)
+color  colAsia   = input.color(#7E57C2, "", inline = "asia", group = GRP_BOX)
+bool   boxLdn    = input.bool(true,  "", inline = "ldn", group = GRP_BOX)
+string txtLdn    = input.string("London", "", inline = "ldn", group = GRP_BOX)
+color  colLdn    = input.color(#26A69A, "", inline = "ldn", group = GRP_BOX)
+bool   boxNY     = input.bool(true,  "", inline = "ny", group = GRP_BOX)
+string txtNY     = input.string("New York", "", inline = "ny", group = GRP_BOX)
+color  colNY     = input.color(#FFA726, "", inline = "ny", group = GRP_BOX)
+bool   boxLC     = input.bool(false, "", inline = "lc", group = GRP_BOX)
+string txtLC     = input.string("London Close", "", inline = "lc", group = GRP_BOX)
+color  colLC     = input.color(#78909C, "", inline = "lc", group = GRP_BOX)
+int    boxFill   = input.int(88, "Fill transparency (%)", minval = 0, maxval = 100, group = GRP_BOX)
+bool   boxRange  = input.bool(true, "Show the session's range in the label", group = GRP_BOX)
+string boxTxtPos = input.string("Top", "Label position", options = ["Top", "Bottom"], group = GRP_BOX)
+string boxTxtSz  = input.string(size.small, "Label size", options = [size.tiny, size.small, size.normal], group = GRP_BOX)
 
 // ════════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -92,6 +124,7 @@ type Span
     int   loT
     bool  live = false     // currently being tracked
     bool  full = false     // tracking began at the period's real start
+    box   bx   = na        // the session's box while the session is running
 
 // One confirmed swing point. `tier` only ever rises: 1 = short-term, 2 = intermediate-term, 3 = long-term.
 type Swing
@@ -122,6 +155,12 @@ var Span weekSpan = Span.new()
 var Span asiaSpan = Span.new()
 var Span ldnSpan  = Span.new()
 var Span nySpan   = Span.new()
+var Span lcSpan   = Span.new()
+
+var array<box>  sessBoxes = array.new<box>()     // finished and running session boxes, oldest first
+var array<line> daySeps   = array.new<line>()    // midnight separators, oldest first
+
+const string NY_TZ = "America/New_York"
 
 float  atr14   = ta.atr(14)
 bool   isFx    = syminfo.type == "forex"
@@ -379,16 +418,45 @@ spanUpdate(Span s) =>
         s.loT := time
     s
 
-// Tracks a session's high and low; when the session ends, both become pools for the next 24 hours.
-sessionStep(Span s, bool inNow, string tag) =>
+// The session's full window, from a "HHMM-HHMM" session string in New York time: [start, end].
+sessWindow(string sess) =>
+    int sm  = math.round(str.tonumber(str.substring(sess, 0, 2))) * 60 + math.round(str.tonumber(str.substring(sess, 2, 4)))
+    int em  = math.round(str.tonumber(str.substring(sess, 5, 7))) * 60 + math.round(str.tonumber(str.substring(sess, 7, 9)))
+    int len = em > sm ? em - sm : em + 1440 - sm
+    int t0  = timestamp(NY_TZ, year(time, NY_TZ), month(time, NY_TZ), dayofmonth(time, NY_TZ), math.floor(sm / 60), sm % 60)
+    if t0 > time
+        t0 := t0 - 86400000
+    [t0, t0 + len * 60000]
+
+boxLabel(string name, Span s) =>
+    boxRange ? name + "  " + str.tostring((s.hi - s.lo) / pipSize, "#.#") + pipUnit : name
+
+// Tracks a session's high and low. Its box spans the whole session window from the first candle and
+// grows to the session's high and low as they form. When the session ends, the high and low become
+// liquidity pools for the next 24 hours (when `makePools`).
+sessionStep(Span s, bool inNow, string tag, string sess, bool boxOn, string name, color col, bool makePools) =>
     if inNow
         if not s.live
             spanStart(s, bar_index > 0)
+            if boxOn
+                [t0, t1] = sessWindow(sess)
+                s.bx := box.new(left = t0, top = s.hi, right = t1, bottom = s.lo, xloc = xloc.bar_time,
+                     border_color = color.new(col, 50), border_width = 1, bgcolor = color.new(col, boxFill),
+                     text = boxLabel(name, s), text_size = boxTxtSz, text_color = col, text_halign = text.align_left,
+                     text_valign = boxTxtPos == "Top" ? text.align_top : text.align_bottom)
+                sessBoxes.push(s.bx)
+                if sessBoxes.size() > keepDays * 4
+                    box.delete(sessBoxes.shift())
         else
             spanUpdate(s)
+            if not na(s.bx)
+                box.set_top(s.bx, s.hi)
+                box.set_bottom(s.bx, s.lo)
+                box.set_text(s.bx, boxLabel(name, s))
     else if s.live
         s.live := false
-        if s.full and liqSess and tfSec <= 3600
+        s.bx   := na
+        if makePools and s.full and liqSess and tfSec <= 3600
             int exp = time + 86400000
             newPool(s.hi, true,  "SESS", tag + " H", tag + " H", s.hiT, exp)
             newPool(s.lo, false, "SESS", tag + " L", tag + " L", s.loT, exp)
@@ -523,10 +591,10 @@ int   swingBar     = bar_index - swingLen
 bool newDay  = timeframe.change("D")
 bool newWeek = timeframe.change("W")
 
-const string NY_TZ = "America/New_York"
 bool inAsia = not na(time(timeframe.period, sessAsia + ":1234567", NY_TZ))
 bool inLdn  = not na(time(timeframe.period, sessLdn  + ":1234567", NY_TZ))
 bool inNY   = not na(time(timeframe.period, sessNY   + ":1234567", NY_TZ))
+bool inLC   = not na(time(timeframe.period, sessLC   + ":1234567", NY_TZ))
 
 // IPDA data ranges (Spec 6.1): highest high / lowest low of the last 20, 40 and 60 completed days
 // and the open time of the day that made each one. `[1]` + lookahead keeps them to closed days only.
@@ -588,10 +656,12 @@ if barstate.isconfirmed
     else
         spanStart(weekSpan, false)
 
-    // 4 · Session highs/lows
-    sessionStep(asiaSpan, inAsia, "Asia")
-    sessionStep(ldnSpan,  inLdn,  "LDN")
-    sessionStep(nySpan,   inNY,   "NY")
+    // 4 · Session highs/lows and session boxes
+    bool boxesOn = showBoxes and tfSec <= 3600
+    sessionStep(asiaSpan, inAsia, "Asia", sessAsia, boxesOn and boxAsia, txtAsia, colAsia, true)
+    sessionStep(ldnSpan,  inLdn,  "LDN",  sessLdn,  boxesOn and boxLdn,  txtLdn,  colLdn,  true)
+    sessionStep(nySpan,   inNY,   "NY",   sessNY,   boxesOn and boxNY,   txtNY,   colNY,   true)
+    sessionStep(lcSpan,   inLC,   "LC",   sessLC,   boxesOn and boxLC,   txtLC,   colLC,   false)
 
     // 5 · Expiry, then raid/run checks on every live pool (including ones created on this candle)
     array<Pool> stillLive = array.new<Pool>()
@@ -635,6 +705,52 @@ if barstate.islast and pools.size() > 0
             txt.set(i, p.name)
     for i = 0 to pools.size() - 1
         label.set_text(pools.get(i).lb, txt.get(i))
+
+// ════════════════════════════════════════════════════════════════════════════════
+// TIME MAP · DAYS OF THE WEEK (Spec 1.2–1.3)
+// ════════════════════════════════════════════════════════════════════════════════
+// Calendar days (not trading days) in the chosen timezone. A thin line marks each midnight; a second
+// line at the coming midnight closes off today. Day names sit at the top or bottom of the pane,
+// on the first candle at or after noon, so they read as centred on their day.
+int  calKey   = year(time, dayTz) * 10000 + month(time, dayTz) * 100 + dayofmonth(time, dayTz)
+bool newCal   = calKey != calKey[1]
+int  midnight = timestamp(dayTz, year(time, dayTz), month(time, dayTz), dayofmonth(time, dayTz), 0, 0)
+bool dayMapOn = tfSec < 86400
+
+if showDaySep and dayMapOn and newCal and bar_index > 0
+    // Over a data gap (the weekend), draw it on the day's first candle instead of inside the gap.
+    int x = midnight > time[1] + tfSec * 1000 ? time : midnight
+    daySeps.push(line.new(x1 = x, y1 = low, x2 = x, y2 = high, xloc = xloc.bar_time, extend = extend.both,
+         color = colDaySep, style = daySepStyle, width = 1))
+    if daySeps.size() > keepDays
+        line.delete(daySeps.shift())
+
+var line nextSep = na
+if showDaySep and dayMapOn and barstate.islast
+    int tomorrow = midnight + 36 * 3600000      // safely inside tomorrow, whatever the DST shift
+    int nextMid  = timestamp(dayTz, year(tomorrow, dayTz), month(tomorrow, dayTz), dayofmonth(tomorrow, dayTz), 0, 0)
+    if na(nextSep)
+        nextSep := line.new(x1 = nextMid, y1 = low, x2 = nextMid, y2 = high, xloc = xloc.bar_time, extend = extend.both,
+             color = colDaySep, style = daySepStyle, width = 1)
+    else
+        line.set_x1(nextSep, nextMid)
+        line.set_x2(nextSep, nextMid)
+
+var int namedKey = 0
+bool nameNow = false
+if showDayName and dayMapOn and hour(time, dayTz) >= 12 and calKey != namedKey
+    nameNow  := true
+    namedKey := calKey
+int dow = dayofweek(time, dayTz)
+color dayInk = color.new(color.white, 100)    // the plotted character is invisible; only its text shows
+
+plotchar(nameNow and dow == dayofweek.monday,    "Monday",    "•", dayLoc, dayInk, text = "Monday",    textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.tuesday,   "Tuesday",   "•", dayLoc, dayInk, text = "Tuesday",   textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.wednesday, "Wednesday", "•", dayLoc, dayInk, text = "Wednesday", textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.thursday,  "Thursday",  "•", dayLoc, dayInk, text = "Thursday",  textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.friday,    "Friday",    "•", dayLoc, dayInk, text = "Friday",    textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.saturday,  "Saturday",  "•", dayLoc, dayInk, text = "Saturday",  textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.sunday,    "Sunday",    "•", dayLoc, dayInk, text = "Sunday",    textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
 
 // ════════════════════════════════════════════════════════════════════════════════
 // DATA WINDOW

@@ -14,6 +14,7 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 | --- | --- | --- |
 | Swing tiers: STH/STL, ITH/ITL, LTH/LTL | 2.1–2.2 | Built |
 | Liquidity map: BSL/SSL pools, equal highs/lows, raid vs run | 3.1–3.3 | Built |
+| Time map: midnight separators, day names, session boxes | 1.2–1.3, 5.1 | Built |
 | Daily Bias engine | 8 | Next |
 | PD arrays, structure (BOS/MSS), sessions, setups | 4–7, 9 | Planned |
 
@@ -63,3 +64,15 @@ John tracks every level where stops are likely to rest: **buyside liquidity** (B
 **Alerts:** create an alert on John with the condition *Any alert() function call* to be told about every raid and run.
 
 **Data Window:** shows the nearest untaken BSL and SSL.
+
+## Time map
+
+- **Midnight separators:** a thin dotted vertical line at every calendar midnight, New York by default (London or UTC optional). This marks calendar days, not trading days. A matching line at the coming midnight closes off today. Over the weekend gap, the line is drawn on the first candle of the new day.
+- **Day names:** Monday, Tuesday, … printed at the top of the chart (or the bottom), centred on each day at the first candle from noon.
+- **Session boxes:** one rectangle per session.
+    - From the first candle, the box spans the session's full time window and grows to the session's high and low as they form.
+    - Each label shows the session name and its range, e.g. "Asia  23.4 pips".
+    - Asia (20:00–00:00), London (02:00–05:00) and New York (07:00–10:00) are on by default; London Close (10:00–12:00) is optional.
+    - Each session has its own on/off switch, label text and colour. Fill, label position and size are shared settings.
+    - Drawn on charts of 1 hour or lower.
+- The last 30 days of separators and boxes are kept (adjustable).

@@ -4,15 +4,19 @@
 // Detection rules are specified in "John — ICT Concept Detection Spec" (Part numbers referenced below).
 //
 // Modules in this file:
-//   Module 4a · Swing tiers: short-term, intermediate-term and long-term highs/lows (Spec Part 2.1–2.2)
+//   Swing tiers   · short-term, intermediate-term and long-term highs/lows (Spec Part 2.1–2.2)
+//   Liquidity map · BSL/SSL pools, equal highs/lows, raid vs run (Spec Part 3.1–3.3)
 
 //@version=6
-indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500)
+indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500, max_lines_count = 500)
 
 // ════════════════════════════════════════════════════════════════════════════════
 // INPUTS
 // ════════════════════════════════════════════════════════════════════════════════
 const string GRP_SWING = "Swing tiers (2022 Ep 12)"
+const string GRP_LIQ   = "Liquidity pools (Spec Part 3)"
+const string GRP_SESS  = "Session windows (New York time)"
+const string GRP_LSTY  = "Liquidity display"
 
 int    swingLen   = input.int(1, "Short-term swing length", minval = 1, maxval = 5, group = GRP_SWING,
      tooltip = "Candles required on each side of a short-term high/low. 1 = ICT's classic 3-candle swing.")
@@ -25,12 +29,70 @@ color  colMarker  = input.color(color.black, "Marker colour (ITH/ITL/LTH/LTL)", 
 color  colShort   = input.color(color.new(color.gray, 30), "Marker colour (STH/STL)",   group = GRP_SWING)
 string sizeIT     = input.string(size.small,  "Intermediate-term marker size", options = [size.tiny, size.small, size.normal, size.large], group = GRP_SWING)
 string sizeLT     = input.string(size.normal, "Long-term marker size",          options = [size.tiny, size.small, size.normal, size.large], group = GRP_SWING)
-int    maxMarkers = input.int(400, "Max markers kept on chart", minval = 50, maxval = 500, group = GRP_SWING,
-     tooltip = "Oldest markers are removed first once this many are on the chart.")
+int    maxMarkers = input.int(300, "Max markers kept on chart", minval = 50, maxval = 400, group = GRP_SWING,
+     tooltip = "Oldest markers are removed first once this many are on the chart. The rest of the 500-label budget is kept for liquidity labels.")
+
+bool   liqPD       = input.bool(true, "Previous day high/low (PDH / PDL)",    group = GRP_LIQ, tooltip = "Drawn on charts below the daily timeframe.")
+bool   liqPW       = input.bool(true, "Previous week high/low (PWH / PWL)",   group = GRP_LIQ)
+bool   liqSess     = input.bool(true, "Session highs/lows (Asia, London, New York)", group = GRP_LIQ, tooltip = "Drawn on charts of 1 hour or lower. Removed 24 hours after the session ends if still untaken.")
+bool   liqSwing    = input.bool(true, "Untaken intermediate and long-term highs/lows", group = GRP_LIQ)
+int    liqSwingMax = input.int(4, "Swing pools kept per side and tier", minval = 1, maxval = 20, group = GRP_LIQ)
+bool   liqEq       = input.bool(true, "Equal highs/lows (EQH / EQL)",         group = GRP_LIQ)
+float  eqTolAtr    = input.float(0.1, "Equal highs/lows tolerance (× ATR)", minval = 0.01, maxval = 1.0, step = 0.01, group = GRP_LIQ,
+     tooltip = "Two untaken short-term swings at least 3 candles apart whose prices differ by no more than this.")
+bool   liqIpda     = input.bool(true, "IPDA 20/40/60-day highs/lows",         group = GRP_LIQ, tooltip = "From the daily candle. Drawn on daily and lower charts.")
+float  sweepMin    = input.float(0.0, "Trade-through needed to count as taken (pips; ticks off forex)", minval = 0, step = 0.1, group = GRP_LIQ)
+int    reclaimBars = input.int(2, "Candles allowed to close back inside (raid vs run)", minval = 0, maxval = 10, group = GRP_LIQ,
+     tooltip = "Raid: price closes back inside on the taking candle or within this many candles after it. Otherwise it is a run.")
+
+string sessAsia = input.session("2000-0000", "Asian range",          group = GRP_SESS)
+string sessLdn  = input.session("0200-0500", "London Open killzone", group = GRP_SESS)
+string sessNY   = input.session("0700-1000", "New York killzone",    group = GRP_SESS)
+
+color  colBSL      = input.color(#1E88E5, "Buyside liquidity (above highs)", group = GRP_LSTY)
+color  colSSL      = input.color(#E53935, "Sellside liquidity (below lows)", group = GRP_LSTY)
+int    sweptFade   = input.int(65, "Swept pool transparency (%)", minval = 0, maxval = 95, group = GRP_LSTY)
+string liqLblSize  = input.string(size.small, "Label size", options = [size.tiny, size.small, size.normal], group = GRP_LSTY)
+int    lblOffset   = input.int(4, "Labels: candles to the right of price", minval = 0, maxval = 50, group = GRP_LSTY)
+float  mergeTolAtr = input.float(0.25, "Merge labels closer than (× ATR)", minval = 0, maxval = 2, step = 0.05, group = GRP_LSTY)
+int    keepSwept   = input.int(10, "Swept pools kept on chart", minval = 0, maxval = 40, group = GRP_LSTY)
+bool   showRaidX   = input.bool(true, "Mark raid wicks with an ✕", group = GRP_LSTY)
+bool   liqAlerts   = input.bool(true, "Alert on raids and runs", group = GRP_LSTY,
+     tooltip = "Create an alert on this indicator with the condition \"Any alert() function call\" to receive these.")
 
 // ════════════════════════════════════════════════════════════════════════════════
 // TYPES
 // ════════════════════════════════════════════════════════════════════════════════
+// One liquidity pool (Spec 3.1). isBuy = buyside liquidity resting above a high.
+// state: 0 untaken · 1 traded through, waiting to see raid or run · 2 raided · 3 run · 4 removed.
+type Pool
+    float  price
+    bool   isBuy
+    string kind            // "PD", "PW", "SESS", "IT", "LT", "EQ", "IPDA"
+    string key
+    string name
+    int    originTime
+    int    expiry
+    int    state       = 0
+    int    pendingBars = 0
+    int    touches     = 0
+    bool   delayed     = false
+    float  extreme
+    int    extremeTime
+    int    sweepTime
+    line   ln
+    label  lb
+    label  mark
+
+// A running high/low over a period (a day, a week, a session).
+type Span
+    float hi
+    float lo
+    int   hiT
+    int   loT
+    bool  live = false     // currently being tracked
+    bool  full = false     // tracking began at the period's real start
+
 // One confirmed swing point. `tier` only ever rises: 1 = short-term, 2 = intermediate-term, 3 = long-term.
 type Swing
     float price
@@ -39,9 +101,10 @@ type Swing
     bool  isHigh
     int   tier
     label marker = na
+    Pool  pool   = na
 
 // ════════════════════════════════════════════════════════════════════════════════
-// STATE
+// STATE AND SHARED VALUES
 // ════════════════════════════════════════════════════════════════════════════════
 const int KEEP = 50                              // swings kept per sequence (only the last three are tested)
 
@@ -51,8 +114,288 @@ var array<Swing> itHighs = array.new<Swing>()    // intermediate-term highs (lon
 var array<Swing> itLows  = array.new<Swing>()
 var array<Swing> drawn   = array.new<Swing>()    // swings with a marker on the chart, oldest first
 
+var array<Pool>  pools   = array.new<Pool>()     // untaken or pending pools, oldest first
+var array<Pool>  swept   = array.new<Pool>()     // raided or run pools still drawn, oldest first
+
+var Span daySpan  = Span.new()
+var Span weekSpan = Span.new()
+var Span asiaSpan = Span.new()
+var Span ldnSpan  = Span.new()
+var Span nySpan   = Span.new()
+
+float  atr14   = ta.atr(14)
+bool   isFx    = syminfo.type == "forex"
+float  pipSize = isFx ? syminfo.mintick * 10 : syminfo.mintick
+string pipUnit = isFx ? " pips" : " ticks"
+int    tfSec   = timeframe.in_seconds()
+
+// Untaken-pool checks look back up to 1,000 candles.
+max_bars_back(high, 1000)
+max_bars_back(low, 1000)
+
 // ════════════════════════════════════════════════════════════════════════════════
-// MODULE 4a · SWING TIERS (Spec 2.1–2.2)
+// LIQUIDITY MAP · POOLS (Spec 3.1–3.3)
+// ════════════════════════════════════════════════════════════════════════════════
+fmtPx(float p) =>
+    str.tostring(p, format.mintick)
+
+fmtTime(int t) =>
+    str.format_time(t, "yyyy-MM-dd HH:mm", "America/New_York") + " NY"
+
+sideColor(bool isBuy) =>
+    isBuy ? colBSL : colSSL
+
+// Line style tells the pool type: solid = day/week/equal, dashed = session/IPDA, dotted = swing.
+poolStyle(string kind) =>
+    kind == "SESS" or kind == "IPDA" ? line.style_dashed : kind == "IT" or kind == "LT" ? line.style_dotted : line.style_solid
+
+poolWidth(string kind) =>
+    kind == "PW" or kind == "LT" ? 2 : 1
+
+poolTip(Pool p) =>
+    string tip = (p.isBuy ? "Buyside liquidity · " : "Sellside liquidity · ") + p.name + "  " + fmtPx(p.price) +
+         "\nFormed " + fmtTime(p.originTime)
+    if p.state == 2 or p.state == 3
+        float  depth = math.abs(p.extreme - p.price)
+        string how   = p.state == 3 ? "Run: accepted beyond the level" :
+             p.delayed ? "Raid: closed back inside within " + str.tostring(reclaimBars) + " candles" :
+             "Raid: closed back inside on the same candle"
+        tip := tip + "\n" + how + "\nTaken " + fmtTime(p.sweepTime) + "\nDepth " + str.tostring(depth / pipSize, "#.#") +
+             pipUnit + " (" + str.tostring(depth / atr14, "#.##") + " ATR)"
+        if p.state == 2 and depth > atr14
+            tip := tip + "\nDeeper than 1 ATR: possible run"
+    tip
+
+removePool(Pool p) =>
+    if not na(p.ln)
+        line.delete(p.ln)
+    if not na(p.lb)
+        label.delete(p.lb)
+    if not na(p.mark)
+        label.delete(p.mark)
+    p.state := 4
+    p
+
+// Keeps only the newest `cap` untaken pools of one kind and side.
+enforceCap(string kind, bool isBuy) =>
+    int cap = kind == "IT" or kind == "LT" ? liqSwingMax : kind == "EQ" ? 4 : 1000
+    int n   = 0
+    if pools.size() > 0
+        for i = pools.size() - 1 to 0
+            Pool q = pools.get(i)
+            if q.state == 0 and q.kind == kind and q.isBuy == isBuy
+                n += 1
+                if n > cap
+                    removePool(q)
+    n
+
+newPool(float price, bool isBuy, string kind, string key, string name, int originTime, int expiry) =>
+    Pool  p = Pool.new(price, isBuy, kind, key, name, originTime, expiry)
+    color c = sideColor(isBuy)
+    p.ln := line.new(x1 = originTime, y1 = price, x2 = time, y2 = price, xloc = xloc.bar_time,
+         color = c, style = poolStyle(kind), width = poolWidth(kind))
+    p.lb := label.new(x = time, y = price, text = name, xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(c, 100), style = label.style_label_left, textcolor = c, size = liqLblSize,
+         textalign = text.align_left, tooltip = poolTip(p))
+    pools.push(p)
+    enforceCap(kind, isBuy)
+    p
+
+// Removes untaken pools of one kind (previous day/week pools when the period rolls).
+expireKind(string kind) =>
+    for p in pools
+        if p.state == 0 and p.kind == kind
+            removePool(p)
+    kind
+
+// Keeps one pool per IPDA level; when the level moves, the untaken old one is replaced.
+rollIpda(string key, string name, float price, int t, bool isBuy) =>
+    bool same = false
+    for p in pools
+        if p.key == key and p.state <= 1
+            if p.price == price
+                same := true
+            else if p.state == 0
+                removePool(p)
+    if not same and not na(price)
+        newPool(price, isBuy, "IPDA", key, name, t, na)
+    same
+
+// Spec 3.3 — on the first candle that trades through the level: a close back inside is a raid;
+// otherwise the pool waits up to `reclaimBars` candles for a close back inside (delayed raid)
+// before it counts as a run.
+checkSweep(Pool p) =>
+    float thr = sweepMin * pipSize
+    if p.state == 0
+        bool through = p.isBuy ? high > p.price + thr : low < p.price - thr
+        if through
+            p.sweepTime   := time
+            p.extreme     := p.isBuy ? high : low
+            p.extremeTime := time
+            bool back = p.isBuy ? close < p.price : close > p.price
+            if back
+                p.state := 2
+            else if reclaimBars == 0
+                p.state := 3
+            else
+                p.state := 1
+    else if p.state == 1
+        if p.isBuy ? high > p.extreme : low < p.extreme
+            p.extreme     := p.isBuy ? high : low
+            p.extremeTime := time
+        bool back = p.isBuy ? close < p.price : close > p.price
+        if back
+            p.state   := 2
+            p.delayed := true
+        else
+            p.pendingBars := p.pendingBars + 1
+            if p.pendingBars >= reclaimBars
+                p.state := 3
+    p
+
+// Turns a taken pool into its swept look: the line stops at the taking candle and fades,
+// a run ends in an arrowhead, a raid gets an ✕ on the wick.
+markSweptLook(Pool p, color c, float dep, string tag) =>
+    line.set_x2(p.ln, p.sweepTime)
+    line.set_color(p.ln, c)
+    if p.state == 3
+        line.set_style(p.ln, line.style_arrow_right)
+    label.set_xy(p.lb, p.sweepTime, p.price)
+    label.set_text(p.lb, p.name + tag)
+    label.set_textcolor(p.lb, c)
+    label.set_size(p.lb, size.tiny)
+    label.set_tooltip(p.lb, poolTip(p))
+    if p.state == 2 and showRaidX
+        p.mark := label.new(x = p.extremeTime, y = p.extreme, xloc = xloc.bar_time, yloc = yloc.price,
+             color = sideColor(p.isBuy), style = label.style_xcross, size = size.tiny, tooltip = poolTip(p))
+    swept.push(p)
+    if swept.size() > keepSwept
+        removePool(swept.shift())
+    if liqAlerts
+        alert("John · " + syminfo.ticker + " · " + (p.isBuy ? "BSL" : "SSL") + tag + " · " + p.name + " " +
+             fmtPx(p.price) + " · depth " + str.tostring(dep / pipSize, "#.#") + pipUnit, alert.freq_once_per_bar_close)
+    p
+
+// Marks a taken pool, or folds it into one already marked at the same level on the same candle.
+markSwept(Pool p) =>
+    color  c    = color.new(sideColor(p.isBuy), sweptFade)
+    float  dep  = math.abs(p.extreme - p.price)
+    string tag  = p.state == 3 ? " run" : dep > atr14 ? " raid (deep)" : " raid"
+    // A level shared by several pools (e.g. PDH sitting on an ITH) is taken by one candle:
+    // fold it into the pool already marked on that candle so the labels don't overprint.
+    Pool twin = na
+    for q in swept
+        if q.sweepTime == p.sweepTime and q.isBuy == p.isBuy and math.abs(q.price - p.price) <= mergeTolAtr * atr14
+            twin := q
+    if not na(twin)
+        label.set_text(twin.lb, label.get_text(twin.lb) + " · " + p.name)
+        removePool(p)
+    else
+        markSweptLook(p, c, dep, tag)
+    p
+
+// True when no candle from `fromBar` to now has traded beyond `price`.
+untakenSince(int fromBar, float price, bool isHigh) =>
+    bool ok  = true
+    int  len = math.min(bar_index - fromBar, 1000)
+    for i = 0 to len
+        if isHigh ? high[i] > price : low[i] < price
+            ok := false
+            break
+    ok
+
+addSwingPool(Swing s) =>
+    if untakenSince(s.barIdx, s.price, s.isHigh)
+        string nm = s.isHigh ? "ITH" : "ITL"
+        s.pool := newPool(s.price, s.isHigh, "IT", nm, nm, s.barTime, na)
+    s
+
+promoteSwingPool(Swing s) =>
+    Pool p = s.pool
+    if not na(p)
+        if p.state <= 1
+            string nm = s.isHigh ? "LTH" : "LTL"
+            p.kind := "LT"
+            p.key  := nm
+            p.name := nm
+            line.set_width(p.ln, poolWidth("LT"))
+            label.set_text(p.lb, nm)
+            label.set_tooltip(p.lb, poolTip(p))
+            enforceCap("LT", p.isBuy)
+    s
+
+// Adds an equal-highs/lows pool, or folds a third (fourth…) touch into an existing one.
+addEqualPool(float lvl, bool isHigh, int t, float tol) =>
+    bool merged = false
+    for p in pools
+        if not merged and p.kind == "EQ" and p.isBuy == isHigh and p.state == 0 and math.abs(p.price - lvl) <= tol
+            merged    := true
+            p.price   := isHigh ? math.max(p.price, lvl) : math.min(p.price, lvl)
+            p.touches := p.touches + 1
+            p.name    := (isHigh ? "EQH ×" : "EQL ×") + str.tostring(p.touches)
+            line.set_y1(p.ln, p.price)
+            line.set_y2(p.ln, p.price)
+            label.set_y(p.lb, p.price)
+            label.set_text(p.lb, p.name)
+            label.set_tooltip(p.lb, poolTip(p))
+    if not merged
+        string nm = isHigh ? "EQH" : "EQL"
+        Pool np = newPool(lvl, isHigh, "EQ", nm, nm, t, na)
+        np.touches := 2
+    merged
+
+// Spec 3.2 — a new short-term swing and an earlier untaken one, at least 3 candles apart and within
+// `eqTolAtr` × ATR of each other, with nothing traded beyond the pair since, form equal highs/lows.
+detectEqual(Swing s, array<Swing> seq) =>
+    int   n     = seq.size()
+    float tol   = eqTolAtr * atr14
+    bool  found = false
+    if n > 0
+        for k = 1 to math.min(n, 10)
+            Swing o = seq.get(n - k)
+            if s.barIdx - o.barIdx >= 3 and math.abs(s.price - o.price) <= tol
+                float lvl = s.isHigh ? math.max(s.price, o.price) : math.min(s.price, o.price)
+                if untakenSince(o.barIdx, lvl, s.isHigh)
+                    found := true
+                    addEqualPool(lvl, s.isHigh, o.barTime, tol)
+                    break
+    found
+
+spanStart(Span s, bool full) =>
+    s.hi   := high
+    s.lo   := low
+    s.hiT  := time
+    s.loT  := time
+    s.live := true
+    s.full := full
+    s
+
+spanUpdate(Span s) =>
+    if high > s.hi
+        s.hi  := high
+        s.hiT := time
+    if low < s.lo
+        s.lo  := low
+        s.loT := time
+    s
+
+// Tracks a session's high and low; when the session ends, both become pools for the next 24 hours.
+sessionStep(Span s, bool inNow, string tag) =>
+    if inNow
+        if not s.live
+            spanStart(s, bar_index > 0)
+        else
+            spanUpdate(s)
+    else if s.live
+        s.live := false
+        if s.full and liqSess and tfSec <= 3600
+            int exp = time + 86400000
+            newPool(s.hi, true,  "SESS", tag + " H", tag + " H", s.hiT, exp)
+            newPool(s.lo, false, "SESS", tag + " L", tag + " L", s.loT, exp)
+    s
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SWING TIERS (Spec 2.1–2.2)
 // ════════════════════════════════════════════════════════════════════════════════
 // Spec 2.1 — the candle `n` bars back is a short-term high when its high is strictly above the
 // `n` highs on its left and at least equal to the `n` highs on its right (so with two equal
@@ -139,27 +482,36 @@ render(Swing s) =>
             label.set_tooltip(s.marker, tip)
     s
 
-// Registers a newly confirmed short-term swing, then tests whether the previous swing in the same
-// sequence has just become an intermediate-term swing, and whether that promotion in turn makes the
-// previous intermediate-term swing a long-term one.
+// Registers a newly confirmed short-term swing, checks it for equal highs/lows, then tests whether
+// the previous swing in the same sequence has just become an intermediate-term swing, and whether
+// that promotion in turn makes the previous intermediate-term swing a long-term one.
 onNewSwing(Swing s, array<Swing> stSeq, array<Swing> itSeq) =>
     render(s)
+    if liqEq
+        detectEqual(s, stSeq)
     stSeq.push(s)
     if middleIsExtreme(stSeq, s.isHigh)
         Swing itSwing = stSeq.get(stSeq.size() - 2)
         itSwing.tier := math.max(itSwing.tier, 2)
         render(itSwing)
         itSeq.push(itSwing)
+        if liqSwing
+            addSwingPool(itSwing)
         if middleIsExtreme(itSeq, s.isHigh)
             Swing ltSwing = itSeq.get(itSeq.size() - 2)
             ltSwing.tier := 3
             render(ltSwing)
+            if liqSwing
+                promoteSwingPool(ltSwing)
     if stSeq.size() > KEEP
         stSeq.shift()
     if itSeq.size() > KEEP
         itSeq.shift()
     s
 
+// ════════════════════════════════════════════════════════════════════════════════
+// PER-BAR INPUTS TO THE ENGINE
+// ════════════════════════════════════════════════════════════════════════════════
 // History-dependent values are taken on every bar, outside any conditional block.
 bool  newSwingHigh = isSwingHigh(swingLen)
 bool  newSwingLow  = isSwingLow(swingLen)
@@ -168,14 +520,137 @@ float swingLowPx   = low[swingLen]
 int   swingTime    = time[swingLen]
 int   swingBar     = bar_index - swingLen
 
-// Only closed candles are evaluated, so a marker never appears and then vanishes on a live bar.
+bool newDay  = timeframe.change("D")
+bool newWeek = timeframe.change("W")
+
+const string NY_TZ = "America/New_York"
+bool inAsia = not na(time(timeframe.period, sessAsia + ":1234567", NY_TZ))
+bool inLdn  = not na(time(timeframe.period, sessLdn  + ":1234567", NY_TZ))
+bool inNY   = not na(time(timeframe.period, sessNY   + ":1234567", NY_TZ))
+
+// IPDA data ranges (Spec 6.1): highest high / lowest low of the last 20, 40 and 60 completed days
+// and the open time of the day that made each one. `[1]` + lookahead keeps them to closed days only.
+ipdaLevels() =>
+    float h20 = ta.highest(high, 20)
+    float l20 = ta.lowest(low, 20)
+    float h40 = ta.highest(high, 40)
+    float l40 = ta.lowest(low, 40)
+    float h60 = ta.highest(high, 60)
+    float l60 = ta.lowest(low, 60)
+    int   h20t = time[nz(-ta.highestbars(high, 20))]
+    int   l20t = time[nz(-ta.lowestbars(low, 20))]
+    int   h40t = time[nz(-ta.highestbars(high, 40))]
+    int   l40t = time[nz(-ta.lowestbars(low, 40))]
+    int   h60t = time[nz(-ta.highestbars(high, 60))]
+    int   l60t = time[nz(-ta.lowestbars(low, 60))]
+    [h20[1], h20t[1], l20[1], l20t[1], h40[1], h40t[1], l40[1], l40t[1], h60[1], h60t[1], l60[1], l60t[1]]
+
+[ipH20, ipH20t, ipL20, ipL20t, ipH40, ipH40t, ipL40, ipL40t, ipH60, ipH60t, ipL60, ipL60t] = request.security(syminfo.tickerid, "D", ipdaLevels(), lookahead = barmerge.lookahead_on)
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ENGINE — runs once per closed candle, so nothing appears and then vanishes on a live bar
+// ════════════════════════════════════════════════════════════════════════════════
 if barstate.isconfirmed
+    // 1 · Swings, swing pools and equal highs/lows
     if newSwingHigh
         onNewSwing(Swing.new(swingHighPx, swingTime, swingBar, true, 1), stHighs, itHighs)
     if newSwingLow
         onNewSwing(Swing.new(swingLowPx, swingTime, swingBar, false, 1), stLows, itLows)
 
+    // 2 · Day roll: previous day's high/low and the IPDA levels (Spec 3.1, 6.1)
+    if newDay and bar_index > 0
+        expireKind("PD")
+        if liqPD and tfSec < 86400 and daySpan.full
+            newPool(daySpan.hi, true,  "PD", "PDH", "PDH", daySpan.hiT, na)
+            newPool(daySpan.lo, false, "PD", "PDL", "PDL", daySpan.loT, na)
+        if liqIpda and tfSec <= 86400
+            rollIpda("IPDA20H", "IPDA20 H", ipH20, ipH20t, true)
+            rollIpda("IPDA20L", "IPDA20 L", ipL20, ipL20t, false)
+            rollIpda("IPDA40H", "IPDA40 H", ipH40, ipH40t, true)
+            rollIpda("IPDA40L", "IPDA40 L", ipL40, ipL40t, false)
+            rollIpda("IPDA60H", "IPDA60 H", ipH60, ipH60t, true)
+            rollIpda("IPDA60L", "IPDA60 L", ipL60, ipL60t, false)
+        spanStart(daySpan, true)
+    else if daySpan.live
+        spanUpdate(daySpan)
+    else
+        spanStart(daySpan, false)
+
+    // 3 · Week roll: previous week's high/low
+    if newWeek and bar_index > 0
+        expireKind("PW")
+        if liqPW and tfSec < 604800 and weekSpan.full
+            newPool(weekSpan.hi, true,  "PW", "PWH", "PWH", weekSpan.hiT, na)
+            newPool(weekSpan.lo, false, "PW", "PWL", "PWL", weekSpan.loT, na)
+        spanStart(weekSpan, true)
+    else if weekSpan.live
+        spanUpdate(weekSpan)
+    else
+        spanStart(weekSpan, false)
+
+    // 4 · Session highs/lows
+    sessionStep(asiaSpan, inAsia, "Asia")
+    sessionStep(ldnSpan,  inLdn,  "LDN")
+    sessionStep(nySpan,   inNY,   "NY")
+
+    // 5 · Expiry, then raid/run checks on every live pool (including ones created on this candle)
+    array<Pool> stillLive = array.new<Pool>()
+    for p in pools
+        if p.state == 0 and not na(p.expiry) and time >= p.expiry
+            removePool(p)
+        if p.state <= 1
+            checkSweep(p)
+            if p.state == 2 or p.state == 3
+                markSwept(p)
+        if p.state <= 1
+            stillLive.push(p)
+    pools := stillLive
+
+// ════════════════════════════════════════════════════════════════════════════════
+// RENDER — live pools run to just right of price; labels closer than the merge tolerance on the
+// same side are combined into one ("PDH · ITH") so they don't overprint
+// ════════════════════════════════════════════════════════════════════════════════
+if barstate.islast and pools.size() > 0
+    int           xr   = time + lblOffset * tfSec * 1000
+    float         tol  = mergeTolAtr * atr14
+    array<float>  px   = array.new<float>()
+    array<string> txt  = array.new<string>(pools.size(), "")
+    for p in pools
+        line.set_x2(p.ln, xr)
+        label.set_xy(p.lb, xr, p.price)
+        px.push(p.price)
+    array<int> idx  = px.sort_indices(order.ascending)
+    int        lead = -1
+    for k = 0 to idx.size() - 1
+        int  i    = idx.get(k)
+        Pool p    = pools.get(i)
+        bool join = false
+        if lead >= 0
+            Pool lp = pools.get(lead)
+            join := lp.isBuy == p.isBuy and p.price - lp.price <= tol
+        if join
+            txt.set(lead, txt.get(lead) + " · " + p.name)
+        else
+            lead := i
+            txt.set(i, p.name)
+    for i = 0 to pools.size() - 1
+        label.set_text(pools.get(i).lb, txt.get(i))
+
+// ════════════════════════════════════════════════════════════════════════════════
+// DATA WINDOW
+// ════════════════════════════════════════════════════════════════════════════════
 // Pine needs at least one output call at global scope (labels created inside functions don't count).
-// These also expose the latest intermediate-term high/low in the Data Window for later modules.
+// These also expose values for later modules.
+float nearBSL = na
+float nearSSL = na
+for p in pools
+    if p.state == 0
+        if p.isBuy and p.price > close and (na(nearBSL) or p.price < nearBSL)
+            nearBSL := p.price
+        if not p.isBuy and p.price < close and (na(nearSSL) or p.price > nearSSL)
+            nearSSL := p.price
+
 plot(itHighs.size() > 0 ? itHighs.last().price : na, "Last ITH", color = colMarker, display = display.data_window)
 plot(itLows.size()  > 0 ? itLows.last().price  : na, "Last ITL", color = colMarker, display = display.data_window)
+plot(nearBSL, "Nearest untaken BSL", color = colBSL, display = display.data_window)
+plot(nearSSL, "Nearest untaken SSL", color = colSSL, display = display.data_window)

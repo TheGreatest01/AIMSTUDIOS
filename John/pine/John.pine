@@ -174,3 +174,8 @@ if barstate.isconfirmed
         onNewSwing(Swing.new(swingHighPx, swingTime, swingBar, true, 1), stHighs, itHighs)
     if newSwingLow
         onNewSwing(Swing.new(swingLowPx, swingTime, swingBar, false, 1), stLows, itLows)
+
+// Pine needs at least one output call at global scope (labels created inside functions don't count).
+// These also expose the latest intermediate-term high/low in the Data Window for later modules.
+plot(itHighs.size() > 0 ? itHighs.last().price : na, "Last ITH", color = colMarker, display = display.data_window)
+plot(itLows.size()  > 0 ? itLows.last().price  : na, "Last ITL", color = colMarker, display = display.data_window)

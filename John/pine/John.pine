@@ -1,0 +1,176 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// John — ICT Engine
+// Built module by module from the ICT 2016/2017 Core Content and the 2022 Mentorship.
+// Detection rules are specified in "John — ICT Concept Detection Spec" (Part numbers referenced below).
+//
+// Modules in this file:
+//   Module 4a · Swing tiers: short-term, intermediate-term and long-term highs/lows (Spec Part 2.1–2.2)
+
+//@version=6
+indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500)
+
+// ════════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ════════════════════════════════════════════════════════════════════════════════
+const string GRP_SWING = "Swing tiers (2022 Ep 12)"
+
+int    swingLen   = input.int(1, "Short-term swing length", minval = 1, maxval = 5, group = GRP_SWING,
+     tooltip = "Candles required on each side of a short-term high/low. 1 = ICT's classic 3-candle swing.")
+bool   showLT     = input.bool(true,  "Show long-term highs/lows (LTH / LTL)",          group = GRP_SWING)
+bool   showIT     = input.bool(true,  "Show intermediate-term highs/lows (ITH / ITL)",  group = GRP_SWING)
+bool   showST     = input.bool(false, "Show short-term highs/lows (STH / STL)",         group = GRP_SWING)
+bool   showTags   = input.bool(false, "Show text tags next to markers",                 group = GRP_SWING)
+color  colMarker  = input.color(color.black, "Marker colour (ITH/ITL/LTH/LTL)",          group = GRP_SWING,
+     tooltip = "Black by default. Switch to a light colour on a dark chart theme.")
+color  colShort   = input.color(color.new(color.gray, 30), "Marker colour (STH/STL)",   group = GRP_SWING)
+string sizeIT     = input.string(size.small,  "Intermediate-term marker size", options = [size.tiny, size.small, size.normal, size.large], group = GRP_SWING)
+string sizeLT     = input.string(size.normal, "Long-term marker size",          options = [size.tiny, size.small, size.normal, size.large], group = GRP_SWING)
+int    maxMarkers = input.int(400, "Max markers kept on chart", minval = 50, maxval = 500, group = GRP_SWING,
+     tooltip = "Oldest markers are removed first once this many are on the chart.")
+
+// ════════════════════════════════════════════════════════════════════════════════
+// TYPES
+// ════════════════════════════════════════════════════════════════════════════════
+// One confirmed swing point. `tier` only ever rises: 1 = short-term, 2 = intermediate-term, 3 = long-term.
+type Swing
+    float price
+    int   barTime
+    int   barIdx
+    bool  isHigh
+    int   tier
+    label marker = na
+
+// ════════════════════════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════════════════════════
+const int KEEP = 50                              // swings kept per sequence (only the last three are tested)
+
+var array<Swing> stHighs = array.new<Swing>()    // short-term highs, oldest first
+var array<Swing> stLows  = array.new<Swing>()
+var array<Swing> itHighs = array.new<Swing>()    // intermediate-term highs (long-terms are a subset)
+var array<Swing> itLows  = array.new<Swing>()
+var array<Swing> drawn   = array.new<Swing>()    // swings with a marker on the chart, oldest first
+
+// ════════════════════════════════════════════════════════════════════════════════
+// MODULE 4a · SWING TIERS (Spec 2.1–2.2)
+// ════════════════════════════════════════════════════════════════════════════════
+// Spec 2.1 — the candle `n` bars back is a short-term high when its high is strictly above the
+// `n` highs on its left and at least equal to the `n` highs on its right (so with two equal
+// adjacent highs, the first one is the swing). Confirmed only once the `n` right-hand candles close.
+isSwingHigh(int n) =>
+    bool ok = bar_index >= 2 * n
+    if ok
+        float c = high[n]
+        for i = 1 to n
+            if c <= high[n + i] or c < high[n - i]
+                ok := false
+                break
+    ok
+
+isSwingLow(int n) =>
+    bool ok = bar_index >= 2 * n
+    if ok
+        float c = low[n]
+        for i = 1 to n
+            if c >= low[n + i] or c > low[n - i]
+                ok := false
+                break
+    ok
+
+// Spec 2.2 — the middle of the last three swings in a sequence is promoted when it is more extreme
+// than both neighbours: a short-term high with lower short-term highs on each side is an ITH, and an
+// ITH with lower ITHs on each side is an LTH. Lows mirror this.
+middleIsExtreme(array<Swing> seq, bool isHigh) =>
+    int  n   = seq.size()
+    bool res = false
+    if n >= 3
+        float a = seq.get(n - 3).price
+        float b = seq.get(n - 2).price
+        float c = seq.get(n - 1).price
+        res := isHigh ? b > a and b > c : b < a and b < c
+    res
+
+// Which tier a swing is drawn as, given the visibility toggles (0 = not drawn).
+// An LTH is also an ITH, so it still shows as an ITH when long-term markers are hidden.
+displayTier(int tier) =>
+    int d = 0
+    if tier >= 3 and showLT
+        d := 3
+    else if tier >= 2 and showIT
+        d := 2
+    else if tier >= 1 and showST
+        d := 1
+    d
+
+tierName(int tier, bool isHigh) =>
+    string base = tier == 3 ? "LT" : tier == 2 ? "IT" : "ST"
+    base + (isHigh ? "H" : "L")
+
+// Creates, updates or removes the swing's triangle so it matches its current tier.
+// Highs: downward triangle above the candle. Lows: upward triangle below the candle.
+render(Swing s) =>
+    int d = displayTier(s.tier)
+    if d == 0
+        if not na(s.marker)
+            label.delete(s.marker)
+            s.marker := na
+    else
+        color  c   = d == 1 ? colShort : colMarker
+        string sz  = d == 3 ? sizeLT : d == 2 ? sizeIT : size.tiny
+        string txt = showTags ? tierName(d, s.isHigh) : ""
+        string tip = tierName(s.tier, s.isHigh) + "  " + str.tostring(s.price, format.mintick) + "\n" +
+             str.format_time(s.barTime, "yyyy-MM-dd HH:mm", "America/New_York") + " New York"
+        if na(s.marker)
+            s.marker := label.new(x = s.barTime, y = s.price, text = txt, xloc = xloc.bar_time,
+                 yloc = s.isHigh ? yloc.abovebar : yloc.belowbar, color = c,
+                 style = s.isHigh ? label.style_triangledown : label.style_triangleup,
+                 textcolor = c, size = sz, tooltip = tip)
+            drawn.push(s)
+            if drawn.size() > maxMarkers
+                Swing old = drawn.shift()
+                if not na(old.marker)
+                    label.delete(old.marker)
+                    old.marker := na
+        else
+            label.set_color(s.marker, c)
+            label.set_textcolor(s.marker, c)
+            label.set_size(s.marker, sz)
+            label.set_text(s.marker, txt)
+            label.set_tooltip(s.marker, tip)
+    s
+
+// Registers a newly confirmed short-term swing, then tests whether the previous swing in the same
+// sequence has just become an intermediate-term swing, and whether that promotion in turn makes the
+// previous intermediate-term swing a long-term one.
+onNewSwing(Swing s, array<Swing> stSeq, array<Swing> itSeq) =>
+    render(s)
+    stSeq.push(s)
+    if middleIsExtreme(stSeq, s.isHigh)
+        Swing itSwing = stSeq.get(stSeq.size() - 2)
+        itSwing.tier := math.max(itSwing.tier, 2)
+        render(itSwing)
+        itSeq.push(itSwing)
+        if middleIsExtreme(itSeq, s.isHigh)
+            Swing ltSwing = itSeq.get(itSeq.size() - 2)
+            ltSwing.tier := 3
+            render(ltSwing)
+    if stSeq.size() > KEEP
+        stSeq.shift()
+    if itSeq.size() > KEEP
+        itSeq.shift()
+    s
+
+// History-dependent values are taken on every bar, outside any conditional block.
+bool  newSwingHigh = isSwingHigh(swingLen)
+bool  newSwingLow  = isSwingLow(swingLen)
+float swingHighPx  = high[swingLen]
+float swingLowPx   = low[swingLen]
+int   swingTime    = time[swingLen]
+int   swingBar     = bar_index - swingLen
+
+// Only closed candles are evaluated, so a marker never appears and then vanishes on a live bar.
+if barstate.isconfirmed
+    if newSwingHigh
+        onNewSwing(Swing.new(swingHighPx, swingTime, swingBar, true, 1), stHighs, itHighs)
+    if newSwingLow
+        onNewSwing(Swing.new(swingLowPx, swingTime, swingBar, false, 1), stLows, itLows)

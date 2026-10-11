@@ -82,7 +82,7 @@ structureEngine(int n, float eqTol) =>
                     float lvl = math.max(p, hP.get(j))
                     if hX.get(j) <= lvl
                         eqH  := lvl
-                        eqHt := hT.get(j)
+                        eqHt := p > hP.get(j) ? time[n] : hT.get(j)    // the swing that sits at the level
                         break
         hP.push(p)
         hT.push(time[n])
@@ -121,7 +121,7 @@ structureEngine(int n, float eqTol) =>
                     float lvl = math.min(p, lP.get(j))
                     if lX.get(j) >= lvl
                         eqL  := lvl
-                        eqLt := lT.get(j)
+                        eqLt := p < lP.get(j) ? time[n] : lT.get(j)
                         break
         lP.push(p)
         lT.push(time[n])

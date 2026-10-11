@@ -1,0 +1,261 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// DAILY BIAS (Spec Part 8)
+// ════════════════════════════════════════════════════════════════════════════════
+// Six votes from closed daily and weekly candles, weighted into one score from −1 (bearish) to +1
+// (bullish), adjusted for where price sits in its 20-day range and capped during consolidation.
+// A day's bias uses only candles closed before that day opened, so it is locked for the whole day
+// and reads the same on every chart timeframe.
+const string GRP_BIAS = "Daily bias (Spec Part 8)"
+
+bool   showBias    = input.bool(true, "Show daily bias", group = GRP_BIAS)
+string biasPos     = input.string("Top right", "Position", options = ["Top right", "Bottom right"], group = GRP_BIAS)
+bool   biasDetails = input.bool(false, "Show the score and the six votes", group = GRP_BIAS)
+string biasTxtSz   = input.string(size.small, "Text size", options = [size.tiny, size.small, size.normal], group = GRP_BIAS)
+float  wF1         = input.float(1.5,  "Weight · daily order flow",           minval = 0, step = 0.25, group = GRP_BIAS)
+float  wF2         = input.float(1.25, "Weight · previous-day candle",        minval = 0, step = 0.25, group = GRP_BIAS)
+float  wF3         = input.float(1.25, "Weight · liquidity cycle (ERL/IRL)",  minval = 0, step = 0.25, group = GRP_BIAS)
+float  wF4         = input.float(1.0,  "Weight · IPDA 20/40/60 break",        minval = 0, step = 0.25, group = GRP_BIAS)
+float  wF5         = input.float(1.0,  "Weight · weekly order flow",          minval = 0, step = 0.25, group = GRP_BIAS)
+float  wF6         = input.float(0.75, "Weight · SMT divergence",             minval = 0, step = 0.25, group = GRP_BIAS)
+string smtSym      = input.string("", "SMT pair (blank = off)", group = GRP_BIAS,
+     tooltip = "A correlated symbol, e.g. OANDA:GBPUSD on a EURUSD chart. For DXY, also tick the inverse box.")
+bool   smtInv      = input.bool(false, "SMT pair moves inversely (e.g. DXY)", group = GRP_BIAS)
+int    biasSwing   = input.int(2, "Daily swing length", minval = 1, maxval = 5, group = GRP_BIAS,
+     tooltip = "Candles on each side of a daily swing high/low used for daily order flow. 2 = a 5-candle swing.")
+float  strongTh    = input.float(0.55, "Strong at |score| ≥",   minval = 0, maxval = 1, step = 0.05, group = GRP_BIAS)
+float  modTh       = input.float(0.30, "Bullish/bearish at |score| ≥", minval = 0, maxval = 1, step = 0.05, group = GRP_BIAS,
+     tooltip = "Below this the bias is Neutral: a no-trade day.")
+bool   biasAlert   = input.bool(true, "Alert with each new day's bias", group = GRP_BIAS)
+
+// Spec 8.3 — this candle against the one before it:
+//   close above its high +1 · close below its low −1 · outside candle closing inside ±0.5 by which half
+//   it closed in · took its high and closed back inside −1 · took its low and closed back inside +1 · inside 0.
+prevCandleVote() =>
+    float v = 0.0
+    if close > high[1]
+        v := 1.0
+    else if close < low[1]
+        v := -1.0
+    else if high > high[1] and low < low[1]
+        v := close > (high + low) / 2 ? 0.5 : -0.5
+    else if high > high[1]
+        v := -1.0
+    else if low < low[1]
+        v := 1.0
+    v
+
+// Runs on daily candles through request.security. Each value is worked out with this candle as
+// "yesterday" and returned offset by [1], so with lookahead on the chart only sees closed days.
+biasDaily(int n) =>
+    var float        sh     = na                    // last confirmed daily swing high / low not yet closed through
+    var float        sl     = na
+    var int          flow   = 0
+    var bool         flowD  = false
+    var int          flowB  = na
+    var int          ipDir  = 0
+    var int          ipTier = 0
+    var int          ipB    = na
+    var array<float> bTop   = array.new<float>()     // unmitigated bullish daily FVGs
+    var array<float> bBot   = array.new<float>()
+    var array<float> sTop   = array.new<float>()     // unmitigated bearish daily FVGs
+    var array<float> sBot   = array.new<float>()
+    float a     = ta.atr(14)
+    float adr   = ta.sma(high - low, 20)
+    float h20p  = ta.highest(high, 20)[1]            // IPDA ranges before this candle
+    float l20p  = ta.lowest(low, 20)[1]
+    float h40p  = ta.highest(high, 40)[1]
+    float l40p  = ta.lowest(low, 40)[1]
+    float h60p  = ta.highest(high, 60)[1]
+    float l60p  = ta.lowest(low, 60)[1]
+    float h20   = ta.highest(high, 20)
+    float l20   = ta.lowest(low, 20)
+    float rng5  = ta.highest(high, 5) - ta.lowest(low, 5)
+    bool  newSH = isSwingHigh(n)
+    bool  newSL = isSwingLow(n)
+    float f2    = prevCandleVote()
+
+    // F3 · liquidity cycle (Spec 8.4), against the levels in force before this candle.
+    // Raid of external liquidity (last swing high/low or the 20-day extreme, closed back inside) points
+    // to internal liquidity on the other side; holding a daily FVG above its midpoint points to ERL.
+    float f3    = 0.0
+    bool  raidH = (not na(sh) and high > sh and close < sh) or (not na(h20p) and high > h20p and close < h20p)
+    bool  raidL = (not na(sl) and low < sl and close > sl) or (not na(l20p) and low < l20p and close > l20p)
+    if raidH and not raidL
+        f3 := -1.0
+    else if raidL and not raidH
+        f3 := 1.0
+    else if not raidH and not raidL
+        if bTop.size() > 0
+            for i = bTop.size() - 1 to 0
+                if low <= bTop.get(i) and high >= bBot.get(i)
+                    f3 := close < bBot.get(i) ? -0.5 : close > (bTop.get(i) + bBot.get(i)) / 2 ? 1.0 : 0.0
+                    break
+        if f3 == 0.0 and sTop.size() > 0
+            for i = sTop.size() - 1 to 0
+                if high >= sBot.get(i) and low <= sTop.get(i)
+                    f3 := close > sTop.get(i) ? 0.5 : close < (sTop.get(i) + sBot.get(i)) / 2 ? -1.0 : 0.0
+                    break
+
+    // F1 · daily order flow (Spec 8.2): a close through the last swing high/low. It counts as
+    // displacement when the run of up to 3 same-colour candles ending here has bodies totalling at
+    // least 1 ATR and every body is at least 60% of its candle.
+    if newSH
+        sh := high[n]
+    if newSL
+        sl := low[n]
+    bool  up      = close > open
+    float runBody = 0.0
+    bool  clean   = true
+    for i = 0 to 2
+        if up ? close[i] > open[i] : close[i] < open[i]
+            runBody += math.abs(close[i] - open[i])
+            if math.abs(close[i] - open[i]) < 0.6 * (high[i] - low[i])
+                clean := false
+        else
+            break
+    bool disp = clean and runBody >= a
+    if not na(sh) and close > sh
+        flow  := 1
+        flowD := disp and up
+        flowB := bar_index
+        sh    := na
+    else if not na(sl) and close < sl
+        flow  := -1
+        flowD := disp and not up
+        flowB := bar_index
+        sl    := na
+    float f1 = flow == 0 or bar_index - flowB > 60 ? 0.0 : flow * (flowD ? 1.0 : 0.6)
+
+    // F4 · IPDA break (Spec 8.5): the most recent close beyond a 20/40/60-day extreme within 10 days.
+    int tierUp = close > h60p ? 3 : close > h40p ? 2 : close > h20p ? 1 : 0
+    int tierDn = close < l60p ? 3 : close < l40p ? 2 : close < l20p ? 1 : 0
+    if tierUp > 0
+        ipDir  := 1
+        ipTier := tierUp
+        ipB    := bar_index
+    else if tierDn > 0
+        ipDir  := -1
+        ipTier := tierDn
+        ipB    := bar_index
+    float f4 = ipDir == 0 or bar_index - ipB >= 10 ? 0.0 : ipDir * (ipTier == 3 ? 1.0 : ipTier == 2 ? 0.75 : 0.5)
+
+    // Daily FVGs for the next candle's F3: drop the ones closed through, add the one this candle made.
+    if bTop.size() > 0
+        for i = bTop.size() - 1 to 0
+            if close < bBot.get(i)
+                bTop.remove(i)
+                bBot.remove(i)
+    if sTop.size() > 0
+        for i = sTop.size() - 1 to 0
+            if close > sTop.get(i)
+                sTop.remove(i)
+                sBot.remove(i)
+    if low > high[2] and low - high[2] >= 0.1 * a
+        bTop.push(low)
+        bBot.push(high[2])
+    if high < low[2] and low[2] - high >= 0.1 * a
+        sTop.push(low[2])
+        sBot.push(high)
+    if bTop.size() > 30
+        bTop.shift()
+        bBot.shift()
+    if sTop.size() > 30
+        sTop.shift()
+        sBot.shift()
+
+    // Location in the 20-day range (Spec 8.8) and the consolidation guard: an inside day inside a
+    // 5-day range smaller than 1.2 × the average daily range.
+    float loc  = h20 > l20 ? (close - l20) / (h20 - l20) : 0.5
+    bool  cons = high <= high[1] and low >= low[1] and rng5 < 1.2 * adr
+    [f1[1], f2[1], f3[1], f4[1], loc[1], cons[1], high[1], high[2], low[1], low[2]]
+
+// F5 · weekly order flow (Spec 8.6): weekly structure (close through the last 3-candle weekly swing)
+// averaged with last week's candle against the week before.
+biasWeekly() =>
+    var float wsh  = na
+    var float wsl  = na
+    var int   wdir = 0
+    float     pv   = prevCandleVote()
+    if isSwingHigh(1)
+        wsh := high[1]
+    if isSwingLow(1)
+        wsl := low[1]
+    if not na(wsh) and close > wsh
+        wdir := 1
+        wsh  := na
+    else if not na(wsl) and close < wsl
+        wdir := -1
+        wsl  := na
+    float v = (wdir + pv) / 2
+    v[1]
+
+[bF1, bF2, bF3, bF4, bLoc, bCons, bH1, bH2, bL1, bL2] = request.security(syminfo.tickerid, "D", biasDaily(biasSwing), lookahead = barmerge.lookahead_on)
+float  bF5       = request.security(syminfo.tickerid, "W", biasWeekly(), lookahead = barmerge.lookahead_on)
+string smtTicker = smtSym == "" ? syminfo.tickerid : smtSym
+[oH1, oH2, oL1, oL2] = request.security(smtTicker, "D", [high[1], high[2], low[1], low[2]], lookahead = barmerge.lookahead_on)
+
+// F6 · SMT (Spec 8.7): yesterday this symbol took the day before's low but the pair didn't → bullish;
+// took the high but the pair didn't → bearish. An inverse pair is compared high against low.
+bool  smtOn = smtSym != "" and wF6 > 0
+float bF6   = 0.0
+if smtOn
+    bool meL  = bL1 < bL2
+    bool meH  = bH1 > bH2
+    bool thL  = oL1 < oL2
+    bool thH  = oH1 > oH2
+    bool bull = smtInv ? meL and not thH : meL and not thL
+    bool bear = smtInv ? meH and not thL : meH and not thH
+    bF6 := bull and not bear ? 1.0 : bear and not bull ? -1.0 : 0.0
+
+// Score (Spec 8.8): weighted average of the votes, ×1.15 when price is on the cheap side of its 20-day
+// range for the bias (discount for bullish, premium for bearish), ×0.70 beside the far extreme
+// (above 85% for bullish, below 15% for bearish), capped at ±0.30 in consolidation.
+float wSum  = wF1 + wF2 + wF3 + wF4 + wF5 + (smtOn ? wF6 : 0.0)
+float rawS  = wSum > 0 ? (wF1 * nz(bF1) + wF2 * nz(bF2) + wF3 * nz(bF3) + wF4 * nz(bF4) + wF5 * nz(bF5) + (smtOn ? wF6 * bF6 : 0.0)) / wSum : 0.0
+float locK  = rawS > 0 ? (bLoc < 0.5 ? 1.15 : bLoc > 0.85 ? 0.70 : 1.0) : rawS < 0 ? (bLoc > 0.5 ? 1.15 : bLoc < 0.15 ? 0.70 : 1.0) : 1.0
+float score = math.max(-1.0, math.min(1.0, rawS * locK))
+if bCons
+    score := math.max(-0.30, math.min(0.30, score))
+
+string biasTxt  = score >= modTh ? "Bullish" : score <= -modTh ? "Bearish" : "Neutral"
+bool   strong   = math.abs(score) >= strongTh
+string scoreTxt = (score > 0 ? "+" : "") + str.tostring(score, "0.00")
+
+voteTxt(float v) =>
+    na(v) ? "–" : (v > 0 ? "+" : "") + str.tostring(v, "0.00")
+
+var table biasTbl = na
+if showBias and barstate.islast
+    if na(biasTbl)
+        biasTbl := table.new(biasPos == "Top right" ? position.top_right : position.bottom_right, 2, 10,
+             frame_color = color.new(color.gray, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
+    color bg = biasTxt == "Bullish" ? (strong ? #1B5E20 : #43A047) : biasTxt == "Bearish" ? (strong ? #B71C1C : #E53935) : #757575
+    string tip = "Score " + scoreTxt + (biasTxt == "Neutral" ? " (no-trade day)" : strong ? " (strong)" : " (moderate)") +
+         "\nUses only daily and weekly candles closed before today opened."
+    table.cell(biasTbl, 0, 0, "Bias", text_color = color.white, bgcolor = #424242, text_size = biasTxtSz)
+    table.cell(biasTbl, 1, 0, biasTxt, text_color = color.white, bgcolor = bg, text_size = biasTxtSz, tooltip = tip)
+    if biasDetails
+        color rowBg = color.new(#424242, 20)
+        table.cell(biasTbl, 0, 1, "Score",             text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 1, scoreTxt + (biasTxt == "Neutral" ? "" : strong ? " strong" : " moderate"), text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 2, "Daily order flow",  text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 2, voteTxt(bF1),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 3, "Previous day",      text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 3, voteTxt(bF2),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 4, "Liquidity cycle",   text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 4, voteTxt(bF3),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 5, "IPDA break",        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 5, voteTxt(bF4),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 6, "Weekly order flow", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 6, voteTxt(bF5),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 7, "SMT",               text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 7, smtOn ? voteTxt(bF6) : "off", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 8, "Location (20-day)", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 8, na(bLoc) ? "–" : (bLoc < 0.5 ? "Discount " : "Premium ") + str.tostring(bLoc * 100, "0") + "%", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 9, "Consolidation",     text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 9, bCons ? "Yes · capped" : "No", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+
+if showBias and biasAlert and newDay and barstate.isconfirmed and tfSec < 86400
+    alert("John · " + syminfo.ticker + " · Daily bias: " + biasTxt + " (" + scoreTxt + ")", alert.freq_once_per_bar_close)
+
+plot(score, "Daily bias score", color = color.gray, display = display.data_window)

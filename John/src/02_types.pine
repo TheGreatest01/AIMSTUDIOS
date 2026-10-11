@@ -17,6 +17,7 @@ type Pool
     int    pendingBars = 0
     int    touches     = 0
     bool   delayed     = false
+    string judge       = "M15" // candles that judged the raid/run
     float  extreme
     int    extremeTime
     int    sweepTime

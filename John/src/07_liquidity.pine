@@ -7,9 +7,9 @@ poolTip(Pool p) =>
     if p.state == 2 or p.state == 3
         float  depth = math.abs(p.extreme - p.price)
         string how   = p.state == 3 ? "Run: accepted beyond the level" :
-             p.delayed ? "Raid: an M15 candle closed back inside within " + str.tostring(reclaimBars) + " M15 candles" :
-             "Raid: the taking M15 candle closed back inside"
-        tip := tip + "\n" + how + "\nTaken " + fmtTime(p.sweepTime) + "\nDepth " + str.tostring(depth / pipSize, "#.#") +
+             p.delayed ? "Raid: a candle closed back inside within " + str.tostring(reclaimBars) + " candles" :
+             "Raid: the taking candle closed back inside"
+        tip := tip + "\n" + how + " (judged on " + p.judge + " candles)\nTaken " + fmtTime(p.sweepTime) + "\nDepth " + str.tostring(depth / pipSize, "#.#") +
              pipUnit + " (" + str.tostring(depth / atrRef, "#.##") + " × H1 ATR)"
         if p.state == 2 and depth > atrRef
             tip := tip + "\nDeeper than 1 H1 ATR: possible run"
@@ -181,7 +181,10 @@ addEqualPool(int r, float lvl, bool isHigh, int t, float tol) =>
     for p in pools
         if not merged and p.kind == "EQ" and p.rank == r and p.isBuy == isHigh and p.state == 0 and math.abs(p.price - lvl) <= tol
             merged    := true
-            p.price   := isHigh ? math.max(p.price, lvl) : math.min(p.price, lvl)
+            if isHigh ? lvl > p.price : lvl < p.price
+                p.price      := lvl
+                p.originTime := t
+                line.set_x1(p.ln, t)
             p.touches := p.touches + 1
             p.name    := tfName(r) + (isHigh ? " EQH ×" : " EQL ×") + str.tostring(p.touches)
             line.set_y1(p.ln, p.price)

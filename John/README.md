@@ -29,7 +29,8 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 | `12_engine` | The once-per-closed-candle engine |
 | `13_render` | Pool lines and labels at the last candle |
 | `14_days` | Midnight separators and day names |
-| `15_data_window` | Data Window outputs |
+| `15_daily_bias` | Daily bias votes, score and the bias table |
+| `16_data_window` | Data Window outputs |
 
 After editing a module, run `python3 John/build.py` to regenerate `pine/John.pine`. `python3 John/build.py --check` fails if the generated file is stale or was hand-edited. Pine needs everything defined before it's used, so a new module goes in the manifest after whatever it depends on.
 
@@ -41,7 +42,7 @@ After editing a module, run `python3 John/build.py` to regenerate `pine/John.pin
 | Liquidity map: BSL/SSL pools, equal highs/lows, raid vs run | 3.1–3.3 | Built |
 | Time map: midnight separators, day names, killzone boxes | 1.2–1.3, 5.1 | Built |
 | Power of 3 (AMD): accumulation, manipulation, distribution boxes | 5.3 | Built |
-| Daily Bias engine | 8 | Next |
+| Daily bias: six votes → score → Bullish / Bearish / Neutral table | 8 | Built |
 | PD arrays, structure (BOS/MSS), setups | 4–7, 9 | Planned |
 
 ## Top-down by design
@@ -101,6 +102,8 @@ John tracks every level where stops are likely to rest: **buyside liquidity** (B
 - **Deep raid:** a raid deeper than 1 H1 ATR is tagged "(deep)".
 - **Run:** price stays beyond for 2 more M15 closes. The faded line ends in an arrowhead.
 - When one candle takes several pools at the same level, they share one label.
+- TradingView only supplies M15 data for recent history. Further back (e.g. older candles on a Daily chart), the chart's own candle judges the raid/run, so old pools still end where price actually took them. The tooltip says which candles judged it.
+- Equal highs/lows start at the swing that sits at the pool's price, so the line begins on that wick.
 
 **Tooltips:** hover any label for the price, when the pool formed, how and when it was taken, and the depth in pips and H1 ATR.
 
@@ -145,3 +148,27 @@ John draws one dashed box per phase (charts of 1 hour or lower, on/off with *Sho
 - **True day open line:** a dotted line marks the midnight open across the day.
 - **Live behaviour:** while the day is running, M and D are marked "(developing)" and follow price. If price later breaks the first extreme, the day's reading can flip.
 - **Settings:** every box has its own on/off switch, label and colour. The two windows, fill and labels are adjustable.
+
+## Daily bias
+
+A small table at the top right of the chart (or bottom right) shows **Bias | Bullish / Bearish / Neutral**:
+- Dark green or red: strong. Lighter: moderate. Grey: Neutral, a no-trade day.
+- Hover the cell for the score.
+
+The bias for a day uses only daily and weekly candles that closed before the day opened, so it is locked for the whole day and reads the same on every chart timeframe. Six votes, each from −1 to +1:
+
+| Vote | Weight | Rule (yesterday = D-1) |
+| --- | --- | --- |
+| Daily order flow | 1.5 | Last daily close through a 5-candle swing high (+) or low (−); full weight with displacement, 0.6 without; 0 if older than 60 days |
+| Previous day | 1.25 | D-1 vs D-2: close above its high +1 · below its low −1 · took its high and closed back inside −1 · took its low and closed back inside +1 · outside day ±0.5 · inside day 0 |
+| Liquidity cycle | 1.25 | D-1 raided external liquidity (swing or 20-day high/low, closed back inside) → toward the other side; or held a daily FVG above (+) / below (−) its midpoint |
+| IPDA break | 1.0 | Most recent close beyond the 20/40/60-day high (+) or low (−) within 10 days, weighted 0.5 / 0.75 / 1.0 |
+| Weekly order flow | 1.0 | Weekly structure averaged with last week against the week before |
+| SMT (optional) | 0.75 | Set an SMT pair: D-1 took the day before's low but the pair didn't (+), or the high (−) |
+
+- **Score:** the weighted average of the votes.
+- **Location:** ×1.15 on the cheap side of the 20-day range for the bias; ×0.70 beside its far extreme.
+- **Consolidation:** an inside day inside a tight 5-day range caps the score at ±0.30.
+- **Classification:** |score| ≥ 0.30 is Bullish/Bearish, and ≥ 0.55 is strong.
+- **Settings:** *Show the score and the six votes* expands the table. Every weight and threshold can be changed.
+- **Alerts and Data Window:** an alert fires with each new day's bias, and the Data Window shows the score.

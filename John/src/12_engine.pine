@@ -1,0 +1,108 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// ENGINE — runs once per closed chart candle, so nothing appears and then vanishes on a live bar
+// ════════════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed
+    // 1 · Top-down structure. Only timeframes at or above the chart's are read; below M15 the chart's
+    //     own candles are used only to place each structure timeframe's swings on the exact candle.
+    if tfSec <= 86400
+        trackStep(trD, newDay, openD, bar_index > 0 or tfSec == 86400)
+        processTf(4, newDay, trD, dItH, dItHt, dItHu, dLtH, dLtHt, dEqH, dEqHt, dItL, dItLt, dItLu, dLtL, dLtLt, dEqL, dEqLt, dAtr)
+    if tfSec <= 14400
+        trackStep(trH4, newH4, openH4, bar_index > 0 or tfSec == 14400)
+        processTf(3, newH4, trH4, fItH, fItHt, fItHu, fLtH, fLtHt, fEqH, fEqHt, fItL, fItLt, fItLu, fLtL, fLtLt, fEqL, fEqLt, fAtr)
+    if tfSec <= 3600
+        trackStep(trH1, newH1, openH1, bar_index > 0 or tfSec == 3600)
+        processTf(2, newH1, trH1, hItH, hItHt, hItHu, hLtH, hLtHt, hEqH, hEqHt, hItL, hItLt, hItLu, hLtL, hLtLt, hEqL, hEqLt, hAtr)
+    if tfSec <= 900
+        trackStep(trM15, newM15, openM15, bar_index > 0 or tfSec == 900)
+        processTf(1, newM15, trM15, qItH, qItHt, qItHu, qLtH, qLtHt, qEqH, qEqHt, qItL, qItLt, qItLu, qLtL, qLtLt, qEqL, qEqLt, qAtr)
+
+    // 2 · Day roll: previous day's high/low and the IPDA levels (Spec 3.1, 6.1)
+    if newDay and bar_index > 0
+        expireKind("PD")
+        if liqPD and tfSec < 86400 and daySpan.full
+            newPool(daySpan.hi, true,  "PD", "PDH", "PDH", daySpan.hiT, na, 0)
+            newPool(daySpan.lo, false, "PD", "PDL", "PDL", daySpan.loT, na, 0)
+        if liqIpda and tfSec <= 86400
+            rollIpda("IPDA20H", "IPDA20 H", ipH20, ipH20t, true)
+            rollIpda("IPDA20L", "IPDA20 L", ipL20, ipL20t, false)
+            rollIpda("IPDA40H", "IPDA40 H", ipH40, ipH40t, true)
+            rollIpda("IPDA40L", "IPDA40 L", ipL40, ipL40t, false)
+            rollIpda("IPDA60H", "IPDA60 H", ipH60, ipH60t, true)
+            rollIpda("IPDA60L", "IPDA60 L", ipL60, ipL60t, false)
+        if daySpan.full
+            pdHiVal := daySpan.hi
+            pdLoVal := daySpan.lo
+        spanStart(daySpan, true)
+    else if daySpan.live
+        spanUpdate(daySpan)
+    else
+        spanStart(daySpan, false)
+
+    // 3 · Week roll: previous week's high/low
+    if newWeek and bar_index > 0
+        expireKind("PW")
+        if liqPW and tfSec < 604800 and weekSpan.full
+            newPool(weekSpan.hi, true,  "PW", "PWH", "PWH", weekSpan.hiT, na, 0)
+            newPool(weekSpan.lo, false, "PW", "PWL", "PWL", weekSpan.loT, na, 0)
+        spanStart(weekSpan, true)
+    else if weekSpan.live
+        spanUpdate(weekSpan)
+    else
+        spanStart(weekSpan, false)
+
+    // 4 · Killzone highs/lows and boxes
+    bool boxesOn = showBoxes and tfSec <= 3600
+    // With Power of 3 on, the A box covers the same window as the Asia box, so it replaces it.
+    bool asiaBoxOn = boxesOn and boxAsia and not (showPo3 and po3A and po3Acc == sessAsia)
+    sessionStep(asiaSpan, inAsia, "Asia",  sessAsia, asiaBoxOn,           txtAsia, colAsia)
+    sessionStep(ldnSpan,  inLdn,  "LDN",   sessLdn,  boxesOn and boxLdn,  txtLdn,  colLdn)
+    sessionStep(amSpan,   inAM,   "NY AM", sessAM,   boxesOn and boxAM,   txtAM,   colAM)
+    sessionStep(pmSpan,   inPM,   "NY PM", sessPM,   boxesOn and boxPM,   txtPM,   colPM)
+
+    // 5 · Power of 3 (accumulation, manipulation, distribution)
+    if showPo3 and tfSec <= 3600
+        po3Step(po3, inAcc, accStart, inCyc, cycStart)
+
+    // 6 · Raid/run on M15 candles, the same decision on every chart timeframe:
+    //     below M15 — the M15 candle that just closed; M15 — this candle; above M15 — every M15 candle inside this one.
+    array<float> cH = array.new<float>()
+    array<float> cL = array.new<float>()
+    array<float> cC = array.new<float>()
+    array<int>   cT = array.new<int>()
+    if tfSec < 900
+        if newM15 and not na(m15C)
+            cH.push(m15H)
+            cL.push(m15L)
+            cC.push(m15C)
+            cT.push(m15T)
+    else if tfSec == 900
+        cH.push(high)
+        cL.push(low)
+        cC.push(close)
+        cT.push(time)
+    else if not na(ltfC)
+        cH := ltfH
+        cL := ltfL
+        cC := ltfC
+        cT := ltfT
+    float cMaxH = cH.size() > 0 ? cH.max() : na
+    float cMinL = cL.size() > 0 ? cL.min() : na
+    float thr   = sweepMin * pipSize
+
+    array<Pool> stillLive = array.new<Pool>()
+    for p in pools
+        if p.state == 0 and not na(p.expiry) and time >= p.expiry
+            removePool(p)
+        if p.state <= 1 and cH.size() > 0
+            bool reach = p.state == 1 or (p.isBuy ? cMaxH > p.price + thr : cMinL < p.price - thr)
+            if reach
+                for k = 0 to cH.size() - 1
+                    if p.state <= 1 and cT.get(k) >= p.activeFrom
+                        checkSweep(p, cH.get(k), cL.get(k), cC.get(k), cT.get(k))
+                if p.state == 2 or p.state == 3
+                    markSwept(p)
+        if p.state <= 1
+            stillLive.push(p)
+    pools := stillLive
+

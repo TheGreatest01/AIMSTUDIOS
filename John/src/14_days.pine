@@ -1,0 +1,46 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// TIME MAP · DAYS OF THE WEEK (Spec 1.2–1.3)
+// ════════════════════════════════════════════════════════════════════════════════
+// Calendar days (not trading days) in the chosen timezone. A thin line marks each midnight; a second
+// line at the coming midnight closes off today. Day names sit at the top or bottom of the pane,
+// on the first candle at or after noon, so they read as centred on their day.
+int  calKey   = year(time, dayTz) * 10000 + month(time, dayTz) * 100 + dayofmonth(time, dayTz)
+bool newCal   = calKey != calKey[1]
+int  midnight = timestamp(dayTz, year(time, dayTz), month(time, dayTz), dayofmonth(time, dayTz), 0, 0)
+bool dayMapOn = tfSec < 86400
+
+if showDaySep and dayMapOn and newCal and bar_index > 0
+    // Over a data gap (the weekend), draw it on the day's first candle instead of inside the gap.
+    int x = midnight > time[1] + tfSec * 1000 ? time : midnight
+    daySeps.push(line.new(x1 = x, y1 = low, x2 = x, y2 = high, xloc = xloc.bar_time, extend = extend.both,
+         color = colDaySep, style = daySepStyle, width = 1))
+    if daySeps.size() > keepDays
+        line.delete(daySeps.shift())
+
+var line nextSep = na
+if showDaySep and dayMapOn and barstate.islast
+    int tomorrow = midnight + 36 * 3600000      // safely inside tomorrow, whatever the DST shift
+    int nextMid  = timestamp(dayTz, year(tomorrow, dayTz), month(tomorrow, dayTz), dayofmonth(tomorrow, dayTz), 0, 0)
+    if na(nextSep)
+        nextSep := line.new(x1 = nextMid, y1 = low, x2 = nextMid, y2 = high, xloc = xloc.bar_time, extend = extend.both,
+             color = colDaySep, style = daySepStyle, width = 1)
+    else
+        line.set_x1(nextSep, nextMid)
+        line.set_x2(nextSep, nextMid)
+
+var int namedKey = 0
+bool nameNow = false
+if showDayName and dayMapOn and hour(time, dayTz) >= 12 and calKey != namedKey
+    nameNow  := true
+    namedKey := calKey
+int dow = dayofweek(time, dayTz)
+color dayInk = color.new(color.white, 100)    // the plotted character is invisible; only its text shows
+
+plotchar(nameNow and dow == dayofweek.monday,    "Monday",    "•", dayLoc, dayInk, text = "Monday",    textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.tuesday,   "Tuesday",   "•", dayLoc, dayInk, text = "Tuesday",   textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.wednesday, "Wednesday", "•", dayLoc, dayInk, text = "Wednesday", textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.thursday,  "Thursday",  "•", dayLoc, dayInk, text = "Thursday",  textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.friday,    "Friday",    "•", dayLoc, dayInk, text = "Friday",    textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.saturday,  "Saturday",  "•", dayLoc, dayInk, text = "Saturday",  textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+plotchar(nameNow and dow == dayofweek.sunday,    "Sunday",    "•", dayLoc, dayInk, text = "Sunday",    textcolor = colDayName, size = size.tiny, editable = false, display = display.pane)
+

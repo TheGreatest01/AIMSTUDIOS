@@ -1,0 +1,35 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// SMALL HELPERS
+// ════════════════════════════════════════════════════════════════════════════════
+fmtPx(float p) =>
+    str.tostring(p, format.mintick)
+
+fmtTime(int t) =>
+    str.format_time(t, "yyyy-MM-dd HH:mm", "America/New_York") + " NY"
+
+sideColor(bool isBuy) =>
+    isBuy ? colBSL : colSSL
+
+// Line style tells the pool type: solid = day/week/equal, dashed = killzone/IPDA, dotted = swing.
+poolStyle(string kind) =>
+    kind == "SESS" or kind == "IPDA" ? line.style_dashed : kind == "IT" or kind == "LT" ? line.style_dotted : line.style_solid
+
+poolWidth(string kind) =>
+    kind == "PW" or kind == "LT" ? 2 : 1
+
+// Structure timeframes by rank: 4 = D, 3 = H4, 2 = H1, 1 = M15.
+tfName(int r) =>
+    r == 4 ? "D" : r == 3 ? "H4" : r == 2 ? "H1" : "M15"
+
+tfShown(int r) =>
+    r == 4 ? showD : r == 3 ? showH4 : r == 2 ? showH1 : showM15
+
+tfSize(int r) =>
+    r == 4 ? sizeD : r == 3 ? sizeH4 : r == 2 ? sizeH1 : sizeM15
+
+swingPoolsOn(int r) =>
+    r == 4 ? swD : r == 3 ? swH4 : r == 2 ? swH1 : swM15
+
+eqPoolsOn(int r) =>
+    r == 4 ? eqD : r == 3 ? eqH4 : r == 2 ? eqH1 : eqM15
+

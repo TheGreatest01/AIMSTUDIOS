@@ -1,0 +1,23 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// PER-BAR VALUES
+// ════════════════════════════════════════════════════════════════════════════════
+bool newDay  = timeframe.change("D")
+bool newWeek = timeframe.change("W")
+bool newH4   = timeframe.change("240")
+bool newH1   = timeframe.change("60")
+bool newM15  = timeframe.change("15")
+int  openD   = time("D")
+int  openH4  = time("240")
+int  openH1  = time("60")
+int  openM15 = time("15")
+
+bool inAsia = not na(time(timeframe.period, sessAsia + ":1234567", NY_TZ))
+bool inLdn  = not na(time(timeframe.period, sessLdn  + ":1234567", NY_TZ))
+bool inAM   = not na(time(timeframe.period, sessAM   + ":1234567", NY_TZ))
+bool inPM   = not na(time(timeframe.period, sessPM   + ":1234567", NY_TZ))
+
+bool inAcc    = not na(time(timeframe.period, po3Acc   + ":1234567", NY_TZ))
+bool inCyc    = not na(time(timeframe.period, po3Cycle + ":1234567", NY_TZ))
+bool accStart = inAcc and not inAcc[1] and bar_index > 0
+bool cycStart = inCyc and not inCyc[1] and bar_index > 0
+

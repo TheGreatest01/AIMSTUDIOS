@@ -1,0 +1,80 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// TYPES
+// ════════════════════════════════════════════════════════════════════════════════
+// One liquidity pool (Spec 3.1). isBuy = buyside liquidity resting above a high.
+// state: 0 untaken · 1 traded through, waiting to see raid or run · 2 raided · 3 run · 4 removed.
+type Pool
+    float  price
+    bool   isBuy
+    string kind            // "PD", "PW", "SESS", "IT", "LT", "EQ", "IPDA"
+    string key
+    string name
+    int    originTime
+    int    expiry
+    int    rank        = 0 // structure timeframe it came from: 4 D · 3 H4 · 2 H1 · 1 M15 (0 = time-based pool)
+    int    activeFrom  = 0 // open time of the first M15 candle allowed to take it
+    int    state       = 0
+    int    pendingBars = 0
+    int    touches     = 0
+    bool   delayed     = false
+    float  extreme
+    int    extremeTime
+    int    sweepTime
+    line   ln
+    label  lb
+    label  mark
+
+// A running high/low over a period (a day, a week, a killzone).
+type Span
+    float hi
+    float lo
+    int   hiT
+    int   loT
+    bool  live = false     // currently being tracked
+    bool  full = false     // tracking began at the period's real start
+    box   bx   = na        // the killzone's box while the killzone is running
+
+// One swing marker on the chart. A single candle can be a swing on several timeframes at once
+// (e.g. an H4 LTL that is also an H1 ITL); they share one marker. ranks/tiers hold one entry per timeframe.
+type Mark
+    int        t
+    float      price
+    bool       isHigh
+    label      lb
+    array<int> ranks
+    array<int> tiers
+
+// Where a structure timeframe's candles put their highs and lows on this chart, so a D/H4/H1/M15 swing
+// is marked on the exact chart candle that made it (an M1 chart marks the M1 candle of a daily low).
+type TfTrack
+    int           key       // open time of the structure candle being tracked
+    float         hi
+    float         lo
+    int           hiT
+    int           loT
+    bool          full = false
+    map<int, int> hiMap     // structure candle open time → chart candle time of its high
+    map<int, int> loMap
+    array<int>    keys
+
+// Power of 3 for one day: the accumulation range, then the true day open and the day's two extremes.
+type Po3State
+    bool  accLive = false
+    float accHi
+    float accLo
+    box   bxA
+    bool  cycLive = false
+    int   c0               // true day open time
+    int   c1               // end of the true day window
+    float openPx
+    float hi
+    float lo
+    int   hiT
+    int   loT
+    float refHi            // accumulation range and previous day's range in force when the day opened
+    float refLo
+    float pdHi
+    float pdLo
+    box   bxM
+    box   bxD
+

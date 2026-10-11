@@ -1,0 +1,16 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// DATA WINDOW
+// ════════════════════════════════════════════════════════════════════════════════
+// Pine needs at least one output call at global scope (labels created inside functions don't count).
+// These also expose values for later modules.
+float nearBSL = na
+float nearSSL = na
+for p in pools
+    if p.state == 0
+        if p.isBuy and p.price > close and (na(nearBSL) or p.price < nearBSL)
+            nearBSL := p.price
+        if not p.isBuy and p.price < close and (na(nearSSL) or p.price > nearSSL)
+            nearSSL := p.price
+
+plot(nearBSL, "Nearest untaken BSL", color = colBSL, display = display.data_window)
+plot(nearSSL, "Nearest untaken SSL", color = colSSL, display = display.data_window)

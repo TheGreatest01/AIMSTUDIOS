@@ -8,6 +8,31 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 2. Replace the editor contents with [`pine/John.pine`](pine/John.pine).
 3. Click **Save**, then **Add to chart**.
 
+## Development
+
+`pine/John.pine` is generated: don't edit it by hand. The source is one file per module in `src/`, joined in the order listed in `src/manifest.txt`:
+
+| File | Contains |
+| --- | --- |
+| `00_header` | Licence, description, `indicator()` declaration |
+| `01_inputs` | All settings |
+| `02_types` | `Pool`, `Span`, `Mark`, `TfTrack`, `Po3State` |
+| `03_state` | Persistent arrays, maps and trackers |
+| `04_helpers` | Formatting, colours, timeframe names |
+| `05_structure_engine` | Swing / ITH / LTH / equal-high detection run on D, H4, H1, M15 |
+| `06_requests` | `request.security` calls (structure, IPDA, M15 candles) |
+| `07_liquidity` | Pools, raid/run checks, swept look |
+| `08_structure_markers` | Swing markers on the chart |
+| `09_killzones` | Spans, killzone tracking and boxes |
+| `10_power_of_3` | Accumulation, manipulation, distribution |
+| `11_per_bar` | Per-candle flags (new day, sessions) |
+| `12_engine` | The once-per-closed-candle engine |
+| `13_render` | Pool lines and labels at the last candle |
+| `14_days` | Midnight separators and day names |
+| `15_data_window` | Data Window outputs |
+
+After editing a module, run `python3 John/build.py` to regenerate `pine/John.pine`. `python3 John/build.py --check` fails if the generated file is stale or was hand-edited. Pine needs everything defined before it's used, so a new module goes in the manifest after whatever it depends on.
+
 ## Modules
 
 | Module | Spec part | Status |

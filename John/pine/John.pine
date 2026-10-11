@@ -2,6 +2,7 @@
 // John — ICT Engine
 // Built module by module from the ICT 2016/2017 Core Content and the 2022 Mentorship.
 // Detection rules are specified in "John — ICT Concept Detection Spec" (Part numbers referenced below).
+// Generated from John/src/ by John/build.py: edit the module files there, not this file.
 //
 // Top-down by design: market structure is read only from Daily, H4, H1 and M15 candles, whatever the
 // chart's timeframe, so a level means the same thing on every chart. A chart shows the structure of its

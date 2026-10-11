@@ -1,0 +1,30 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// RENDER — live pools run to just right of price; labels closer than the merge tolerance on the
+// same side are combined into one ("PDH · H4 ITH") so they don't overprint
+// ════════════════════════════════════════════════════════════════════════════════
+if barstate.islast and pools.size() > 0
+    int           xr   = time + lblOffset * tfSec * 1000
+    float         tol  = mergeTolAtr * atr14
+    array<float>  px   = array.new<float>()
+    array<string> txt  = array.new<string>(pools.size(), "")
+    for p in pools
+        line.set_x2(p.ln, xr)
+        label.set_xy(p.lb, xr, p.price)
+        px.push(p.price)
+    array<int> idx  = px.sort_indices(order.ascending)
+    int        lead = -1
+    for k = 0 to idx.size() - 1
+        int  i    = idx.get(k)
+        Pool p    = pools.get(i)
+        bool join = false
+        if lead >= 0
+            Pool lp = pools.get(lead)
+            join := lp.isBuy == p.isBuy and p.price - lp.price <= tol
+        if join
+            txt.set(lead, txt.get(lead) + " · " + p.name)
+        else
+            lead := i
+            txt.set(i, p.name)
+    for i = 0 to pools.size() - 1
+        label.set_text(pools.get(i).lb, txt.get(i))
+

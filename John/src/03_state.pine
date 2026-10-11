@@ -1,0 +1,37 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// STATE AND SHARED VALUES
+// ════════════════════════════════════════════════════════════════════════════════
+var array<Pool>       pools    = array.new<Pool>()       // untaken or pending pools, oldest first
+var array<Pool>       swept    = array.new<Pool>()       // raided or run pools still drawn, oldest first
+var map<string, Mark> marks    = map.new<string, Mark>()
+var array<string>     markKeys = array.new<string>()     // marker keys, oldest first
+
+var TfTrack trD   = TfTrack.new(na, na, na, na, na, false, map.new<int, int>(), map.new<int, int>(), array.new<int>())
+var TfTrack trH4  = TfTrack.new(na, na, na, na, na, false, map.new<int, int>(), map.new<int, int>(), array.new<int>())
+var TfTrack trH1  = TfTrack.new(na, na, na, na, na, false, map.new<int, int>(), map.new<int, int>(), array.new<int>())
+var TfTrack trM15 = TfTrack.new(na, na, na, na, na, false, map.new<int, int>(), map.new<int, int>(), array.new<int>())
+
+var Span daySpan  = Span.new()
+var Span weekSpan = Span.new()
+var Span asiaSpan = Span.new()
+var Span ldnSpan  = Span.new()
+var Span amSpan   = Span.new()
+var Span pmSpan   = Span.new()
+
+var array<box>  sessBoxes = array.new<box>()     // finished and running killzone boxes, oldest first
+var array<line> daySeps   = array.new<line>()    // midnight separators, oldest first
+
+var Po3State    po3      = Po3State.new()
+var array<box>  po3Boxes = array.new<box>()      // A, M and D boxes, oldest first
+var array<line> po3Lines = array.new<line>()     // true day open lines, oldest first
+var float       pdHiVal  = na                    // previous trading day's high and low
+var float       pdLoVal  = na
+
+const string NY_TZ = "America/New_York"
+
+float  atr14   = ta.atr(14)
+bool   isFx    = syminfo.type == "forex"
+float  pipSize = isFx ? syminfo.mintick * 10 : syminfo.mintick
+string pipUnit = isFx ? " pips" : " ticks"
+int    tfSec   = timeframe.in_seconds()
+

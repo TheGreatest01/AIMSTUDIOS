@@ -1,0 +1,65 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// TIME MAP · SPANS AND KILLZONES
+// ════════════════════════════════════════════════════════════════════════════════
+spanStart(Span s, bool full) =>
+    s.hi   := high
+    s.lo   := low
+    s.hiT  := time
+    s.loT  := time
+    s.live := true
+    s.full := full
+    s
+
+spanUpdate(Span s) =>
+    if high > s.hi
+        s.hi  := high
+        s.hiT := time
+    if low < s.lo
+        s.lo  := low
+        s.loT := time
+    s
+
+// The killzone's full window, from a "HHMM-HHMM" session string in New York time: [start, end].
+sessWindow(string sess) =>
+    int sm  = math.round(str.tonumber(str.substring(sess, 0, 2))) * 60 + math.round(str.tonumber(str.substring(sess, 2, 4)))
+    int em  = math.round(str.tonumber(str.substring(sess, 5, 7))) * 60 + math.round(str.tonumber(str.substring(sess, 7, 9)))
+    int len = em > sm ? em - sm : em + 1440 - sm
+    int t0  = timestamp(NY_TZ, year(time, NY_TZ), month(time, NY_TZ), dayofmonth(time, NY_TZ), math.floor(sm / 60), sm % 60)
+    if t0 > time
+        t0 := t0 - 86400000
+    [t0, t0 + len * 60000]
+
+boxLabel(string name, Span s) =>
+    boxRange ? name + "  " + str.tostring((s.hi - s.lo) / pipSize, "#.#") + pipUnit : name
+
+// Tracks a killzone's high and low. Its box spans the whole killzone window from the first candle and
+// grows to the killzone's high and low as they form. When the killzone ends, the high and low become
+// liquidity pools for the next 24 hours.
+sessionStep(Span s, bool inNow, string tag, string sess, bool boxOn, string name, color col) =>
+    if inNow
+        if not s.live
+            spanStart(s, bar_index > 0)
+            if boxOn
+                [t0, t1] = sessWindow(sess)
+                s.bx := box.new(left = t0, top = s.hi, right = t1, bottom = s.lo, xloc = xloc.bar_time,
+                     border_color = color.new(col, 50), border_width = 1, bgcolor = color.new(col, boxFill),
+                     text = boxLabel(name, s), text_size = boxTxtSz, text_color = col, text_halign = text.align_left,
+                     text_valign = boxTxtPos == "Top" ? text.align_top : text.align_bottom)
+                sessBoxes.push(s.bx)
+                if sessBoxes.size() > keepDays * 4
+                    box.delete(sessBoxes.shift())
+        else
+            spanUpdate(s)
+            if not na(s.bx)
+                box.set_top(s.bx, s.hi)
+                box.set_bottom(s.bx, s.lo)
+                box.set_text(s.bx, boxLabel(name, s))
+    else if s.live
+        s.live := false
+        s.bx   := na
+        if s.full and liqSess and tfSec <= 3600
+            int exp = time + 86400000
+            newPool(s.hi, true,  "SESS", tag + " H", tag + " H", s.hiT, exp, 0)
+            newPool(s.lo, false, "SESS", tag + " L", tag + " L", s.loT, exp, 0)
+    s
+

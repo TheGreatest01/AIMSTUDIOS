@@ -1,0 +1,196 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// LIQUIDITY MAP · POOLS (Spec 3.1–3.3)
+// ════════════════════════════════════════════════════════════════════════════════
+poolTip(Pool p) =>
+    string tip = (p.isBuy ? "Buyside liquidity · " : "Sellside liquidity · ") + p.name + "  " + fmtPx(p.price) +
+         "\nFormed " + fmtTime(p.originTime)
+    if p.state == 2 or p.state == 3
+        float  depth = math.abs(p.extreme - p.price)
+        string how   = p.state == 3 ? "Run: accepted beyond the level" :
+             p.delayed ? "Raid: an M15 candle closed back inside within " + str.tostring(reclaimBars) + " M15 candles" :
+             "Raid: the taking M15 candle closed back inside"
+        tip := tip + "\n" + how + "\nTaken " + fmtTime(p.sweepTime) + "\nDepth " + str.tostring(depth / pipSize, "#.#") +
+             pipUnit + " (" + str.tostring(depth / atrRef, "#.##") + " × H1 ATR)"
+        if p.state == 2 and depth > atrRef
+            tip := tip + "\nDeeper than 1 H1 ATR: possible run"
+    tip
+
+removePool(Pool p) =>
+    if not na(p.ln)
+        line.delete(p.ln)
+    if not na(p.lb)
+        label.delete(p.lb)
+    if not na(p.mark)
+        label.delete(p.mark)
+    p.state := 4
+    p
+
+// Keeps only the newest `cap` untaken pools of one kind, side and structure timeframe.
+enforceCap(string kind, bool isBuy, int rank) =>
+    int cap = kind == "IT" or kind == "LT" ? liqSwingMax : kind == "EQ" ? 3 : 1000
+    int n   = 0
+    if pools.size() > 0
+        for i = pools.size() - 1 to 0
+            Pool q = pools.get(i)
+            if q.state == 0 and q.kind == kind and q.isBuy == isBuy and q.rank == rank
+                n += 1
+                if n > cap
+                    removePool(q)
+    n
+
+newPool(float price, bool isBuy, string kind, string key, string name, int originTime, int expiry, int rank) =>
+    Pool  p = Pool.new(price, isBuy, kind, key, name, originTime, expiry)
+    color c = sideColor(isBuy)
+    p.rank       := rank
+    p.activeFrom := time
+    p.ln := line.new(x1 = originTime, y1 = price, x2 = time, y2 = price, xloc = xloc.bar_time,
+         color = c, style = poolStyle(kind), width = poolWidth(kind))
+    p.lb := label.new(x = time, y = price, text = name, xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(c, 100), style = label.style_label_left, textcolor = c, size = liqLblSize,
+         textalign = text.align_left, tooltip = poolTip(p))
+    pools.push(p)
+    enforceCap(kind, isBuy, rank)
+    p
+
+// Removes untaken pools of one kind (previous day/week pools when the period rolls).
+expireKind(string kind) =>
+    for p in pools
+        if p.state == 0 and p.kind == kind
+            removePool(p)
+    kind
+
+// Keeps one pool per IPDA level; when the level moves, the untaken old one is replaced.
+rollIpda(string key, string name, float price, int t, bool isBuy) =>
+    bool same = false
+    for p in pools
+        if p.key == key and p.state <= 1
+            if p.price == price
+                same := true
+            else if p.state == 0
+                removePool(p)
+    if not same and not na(price)
+        newPool(price, isBuy, "IPDA", key, name, t, na, 0)
+    same
+
+// Spec 3.3, judged on one M15 candle (h, l, c, t): on the first M15 candle that trades through the
+// level, a close back inside is a raid; otherwise the pool waits up to `reclaimBars` M15 candles for a
+// close back inside (delayed raid) before it counts as a run.
+checkSweep(Pool p, float h, float l, float c, int t) =>
+    float thr = sweepMin * pipSize
+    if p.state == 0
+        bool through = p.isBuy ? h > p.price + thr : l < p.price - thr
+        if through
+            p.sweepTime   := t
+            p.extreme     := p.isBuy ? h : l
+            p.extremeTime := t
+            bool back = p.isBuy ? c < p.price : c > p.price
+            if back
+                p.state := 2
+            else if reclaimBars == 0
+                p.state := 3
+            else
+                p.state := 1
+    else if p.state == 1
+        if p.isBuy ? h > p.extreme : l < p.extreme
+            p.extreme     := p.isBuy ? h : l
+            p.extremeTime := t
+        bool back = p.isBuy ? c < p.price : c > p.price
+        if back
+            p.state   := 2
+            p.delayed := true
+        else
+            p.pendingBars := p.pendingBars + 1
+            if p.pendingBars >= reclaimBars
+                p.state := 3
+    p
+
+// The chart candle where a structure candle (open time `t`) made its high or low; falls back to `t`.
+exactTime(TfTrack k, int t, bool isHigh) =>
+    int x = isHigh ? k.hiMap.get(t) : k.loMap.get(t)
+    na(x) ? t : x
+
+// Turns a taken pool into its swept look: the line stops at the taking candle and fades,
+// a run ends in an arrowhead, a raid gets an ✕ on the wick.
+markSweptLook(Pool p, color c, float dep, string tag) =>
+    line.set_x2(p.ln, p.sweepTime)
+    line.set_color(p.ln, c)
+    if p.state == 3
+        line.set_style(p.ln, line.style_arrow_right)
+    label.set_xy(p.lb, p.sweepTime, p.price)
+    label.set_text(p.lb, p.name + tag)
+    label.set_textcolor(p.lb, c)
+    label.set_size(p.lb, size.tiny)
+    label.set_tooltip(p.lb, poolTip(p))
+    if p.state == 2 and showRaidX
+        int xt = tfSec < 900 ? exactTime(trM15, p.extremeTime, p.isBuy) : p.extremeTime
+        p.mark := label.new(x = xt, y = p.extreme, xloc = xloc.bar_time, yloc = yloc.price,
+             color = sideColor(p.isBuy), style = label.style_xcross, size = size.tiny, tooltip = poolTip(p))
+    swept.push(p)
+    if swept.size() > keepSwept
+        removePool(swept.shift())
+    if liqAlerts
+        alert("John · " + syminfo.ticker + " · " + (p.isBuy ? "BSL" : "SSL") + tag + " · " + p.name + " " +
+             fmtPx(p.price) + " · depth " + str.tostring(dep / pipSize, "#.#") + pipUnit, alert.freq_once_per_bar_close)
+    p
+
+// Marks a taken pool, or folds it into one already marked at the same level on the same M15 candle.
+markSwept(Pool p) =>
+    color  c    = color.new(sideColor(p.isBuy), sweptFade)
+    float  dep  = math.abs(p.extreme - p.price)
+    string tag  = p.state == 3 ? " run" : dep > atrRef ? " raid (deep)" : " raid"
+    // A level shared by several pools (e.g. PDH sitting on an H4 ITH) is taken by one candle:
+    // fold it into the pool already marked on that candle so the labels don't overprint.
+    Pool twin = na
+    for q in swept
+        if q.sweepTime == p.sweepTime and q.isBuy == p.isBuy and math.abs(q.price - p.price) <= mergeTolAtr * atr14
+            twin := q
+    if not na(twin)
+        label.set_text(twin.lb, label.get_text(twin.lb) + " · " + p.name)
+        removePool(p)
+    else
+        markSweptLook(p, c, dep, tag)
+    p
+
+swingPoolKey(int r, int htfT, bool isHigh) =>
+    str.tostring(r) + "|" + str.tostring(htfT) + (isHigh ? "H" : "L")
+
+// An untaken ITH/ITL from a structure timeframe becomes a pool, e.g. "H4 ITH".
+addSwingPool(int r, float price, int t, int htfT, bool isHigh) =>
+    string nm = tfName(r) + (isHigh ? " ITH" : " ITL")
+    newPool(price, isHigh, "IT", swingPoolKey(r, htfT, isHigh), nm, t, na, r)
+
+// When that swing is later promoted to LTH/LTL, its pool is renamed and drawn thicker.
+promoteSwingPool(int r, int htfT, bool isHigh) =>
+    string key   = swingPoolKey(r, htfT, isHigh)
+    bool   found = false
+    for p in pools
+        if p.key == key and p.state <= 1
+            found  := true
+            p.kind := "LT"
+            p.name := tfName(r) + (isHigh ? " LTH" : " LTL")
+            line.set_width(p.ln, poolWidth("LT"))
+            label.set_text(p.lb, p.name)
+            label.set_tooltip(p.lb, poolTip(p))
+    if found
+        enforceCap("LT", isHigh, r)
+    found
+
+// Adds an equal-highs/lows pool, or folds a third (fourth…) touch into an existing one of the same timeframe.
+addEqualPool(int r, float lvl, bool isHigh, int t, float tol) =>
+    bool merged = false
+    for p in pools
+        if not merged and p.kind == "EQ" and p.rank == r and p.isBuy == isHigh and p.state == 0 and math.abs(p.price - lvl) <= tol
+            merged    := true
+            p.price   := isHigh ? math.max(p.price, lvl) : math.min(p.price, lvl)
+            p.touches := p.touches + 1
+            p.name    := tfName(r) + (isHigh ? " EQH ×" : " EQL ×") + str.tostring(p.touches)
+            line.set_y1(p.ln, p.price)
+            line.set_y2(p.ln, p.price)
+            label.set_y(p.lb, p.price)
+            label.set_text(p.lb, p.name)
+            label.set_tooltip(p.lb, poolTip(p))
+    if not merged
+        Pool np = newPool(lvl, isHigh, "EQ", "EQ", tfName(r) + (isHigh ? " EQH" : " EQL"), t, na, r)
+        np.touches := 2
+    merged
+

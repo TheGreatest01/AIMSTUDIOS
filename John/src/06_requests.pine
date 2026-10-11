@@ -1,0 +1,25 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// DATA REQUESTS
+// ════════════════════════════════════════════════════════════════════════════════
+// A structure timeframe below the chart's is never shown, so its request points at the chart's own
+// timeframe instead (cheap, unused) rather than replaying thousands of lower-timeframe candles.
+string reqD   = tfSec <= 86400 ? "D"   : timeframe.period
+string reqH4  = tfSec <= 14400 ? "240" : timeframe.period
+string reqH1  = tfSec <= 3600  ? "60"  : timeframe.period
+string reqM15 = tfSec <= 900   ? "15"  : timeframe.period
+
+[dItH, dItHt, dItHu, dLtH, dLtHt, dEqH, dEqHt, dItL, dItLt, dItLu, dLtL, dLtLt, dEqL, dEqLt, dAtr] = request.security(syminfo.tickerid, reqD, structureEngine(swingLen, eqTolAtr), lookahead = barmerge.lookahead_on)
+[fItH, fItHt, fItHu, fLtH, fLtHt, fEqH, fEqHt, fItL, fItLt, fItLu, fLtL, fLtLt, fEqL, fEqLt, fAtr] = request.security(syminfo.tickerid, reqH4, structureEngine(swingLen, eqTolAtr), lookahead = barmerge.lookahead_on)
+[hItH, hItHt, hItHu, hLtH, hLtHt, hEqH, hEqHt, hItL, hItLt, hItLu, hLtL, hLtLt, hEqL, hEqLt, hAtr] = request.security(syminfo.tickerid, reqH1, structureEngine(swingLen, eqTolAtr), lookahead = barmerge.lookahead_on)
+[qItH, qItHt, qItHu, qLtH, qLtHt, qEqH, qEqHt, qItL, qItLt, qItLu, qLtL, qLtLt, qEqL, qEqLt, qAtr] = request.security(syminfo.tickerid, reqM15, structureEngine(swingLen, eqTolAtr), lookahead = barmerge.lookahead_on)
+
+[ipH20, ipH20t, ipL20, ipL20t, ipH40, ipH40t, ipL40, ipL40t, ipH60, ipH60t, ipL60, ipL60t] = request.security(syminfo.tickerid, "D", ipdaLevels(), lookahead = barmerge.lookahead_on)
+
+// M15 candles for raid/run decisions. Charts below M15 get the last closed M15 candle at the start of
+// each new one; charts above M15 get every M15 candle inside each of their own candles.
+[m15H, m15L, m15C, m15T] = request.security(syminfo.tickerid, reqM15, [high[1], low[1], close[1], time[1]], lookahead = barmerge.lookahead_on)
+[ltfH, ltfL, ltfC, ltfT] = request.security_lower_tf(syminfo.tickerid, "15", [high, low, close, time], ignore_invalid_timeframe = true)
+
+// Reference size for "deep" raids: the H1 ATR, so the judgement is the same on every chart.
+float atrRef = request.security(syminfo.tickerid, "60", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
+

@@ -1,0 +1,18 @@
+# Build order for John.pine. Pine needs everything defined before it is used, so keep this order.
+# Run `python3 John/build.py` after editing any file in John/src/.
+00_header.pine
+01_inputs.pine
+02_types.pine
+03_state.pine
+04_helpers.pine
+05_structure_engine.pine
+06_requests.pine
+07_liquidity.pine
+08_structure_markers.pine
+09_killzones.pine
+10_power_of_3.pine
+11_per_bar.pine
+12_engine.pine
+13_render.pine
+14_days.pine
+15_data_window.pine

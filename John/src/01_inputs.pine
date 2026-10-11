@@ -1,0 +1,114 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ════════════════════════════════════════════════════════════════════════════════
+const string GRP_STRUCT = "Market structure (top-down: D · H4 · H1 · M15)"
+const string GRP_LIQ    = "Liquidity pools (Spec Part 3)"
+const string GRP_SESS   = "Killzones (New York time)"
+const string GRP_LSTY   = "Liquidity display"
+const string GRP_DAYS   = "Days of the week"
+const string GRP_BOX    = "Killzone boxes"
+const string GRP_PO3    = "Power of 3 (AMD)"
+
+bool   showD      = input.bool(true, "Show structure from  D", inline = "tfs", group = GRP_STRUCT)
+bool   showH4     = input.bool(true, "H4",  inline = "tfs", group = GRP_STRUCT)
+bool   showH1     = input.bool(true, "H1",  inline = "tfs", group = GRP_STRUCT)
+bool   showM15    = input.bool(true, "M15", inline = "tfs", group = GRP_STRUCT,
+     tooltip = "A chart shows its own timeframe and every higher one. Charts below M15 show all four; their own candles never decide structure.")
+bool   showLT     = input.bool(true, "Long-term highs/lows (LTH / LTL)",         group = GRP_STRUCT)
+bool   showIT     = input.bool(true, "Intermediate-term highs/lows (ITH / ITL)", group = GRP_STRUCT)
+bool   showTags   = input.bool(true, "Tags next to markers (e.g. \"H4 LTL\")",   group = GRP_STRUCT)
+color  colMarker  = input.color(color.black, "Marker colour", group = GRP_STRUCT,
+     tooltip = "Black by default. Switch to a light colour on a dark chart theme.")
+string sizeD      = input.string(size.large,  "Marker size  D",   options = [size.tiny, size.small, size.normal, size.large, size.huge], inline = "sz1", group = GRP_STRUCT)
+string sizeH4     = input.string(size.normal, "H4",               options = [size.tiny, size.small, size.normal, size.large, size.huge], inline = "sz1", group = GRP_STRUCT)
+string sizeH1     = input.string(size.small,  "Marker size  H1",  options = [size.tiny, size.small, size.normal, size.large, size.huge], inline = "sz2", group = GRP_STRUCT)
+string sizeM15    = input.string(size.tiny,   "M15",              options = [size.tiny, size.small, size.normal, size.large, size.huge], inline = "sz2", group = GRP_STRUCT)
+int    swingLen   = input.int(1, "Short-term swing length", minval = 1, maxval = 5, group = GRP_STRUCT,
+     tooltip = "Candles required on each side of a short-term high/low on each structure timeframe. 1 = ICT's classic 3-candle swing.")
+int    maxMarkers = input.int(300, "Max markers kept on chart", minval = 50, maxval = 350, group = GRP_STRUCT,
+     tooltip = "Oldest markers are removed first. The rest of the 500-label budget is kept for liquidity labels.")
+
+bool   liqPD       = input.bool(true, "Previous day high/low (PDH / PDL)",  group = GRP_LIQ, tooltip = "Drawn on charts below the daily timeframe.")
+bool   liqPW       = input.bool(true, "Previous week high/low (PWH / PWL)", group = GRP_LIQ)
+bool   liqSess     = input.bool(true, "Killzone highs/lows (Asia, London, NY AM, NY PM)", group = GRP_LIQ,
+     tooltip = "Drawn on charts of 1 hour or lower. Removed 24 hours after the killzone ends if still untaken.")
+bool   swD         = input.bool(true,  "Swing liquidity from  D", inline = "swl", group = GRP_LIQ)
+bool   swH4        = input.bool(true,  "H4",  inline = "swl", group = GRP_LIQ)
+bool   swH1        = input.bool(true,  "H1",  inline = "swl", group = GRP_LIQ)
+bool   swM15       = input.bool(false, "M15", inline = "swl", group = GRP_LIQ,
+     tooltip = "Untaken ITH/ITL and LTH/LTL from these timeframes become liquidity pools.")
+int    liqSwingMax = input.int(3, "Swing pools kept per side, tier and timeframe", minval = 1, maxval = 10, group = GRP_LIQ)
+bool   eqD         = input.bool(false, "Equal highs/lows from  D", inline = "eql", group = GRP_LIQ)
+bool   eqH4        = input.bool(true,  "H4",  inline = "eql", group = GRP_LIQ)
+bool   eqH1        = input.bool(true,  "H1",  inline = "eql", group = GRP_LIQ)
+bool   eqM15       = input.bool(true,  "M15", inline = "eql", group = GRP_LIQ,
+     tooltip = "Two untaken short-term swings on that timeframe, at least 3 of its candles apart, within the tolerance below.")
+float  eqTolAtr    = input.float(0.1, "Equal highs/lows tolerance (× that timeframe's ATR)", minval = 0.01, maxval = 1.0, step = 0.01, group = GRP_LIQ)
+bool   liqIpda     = input.bool(true, "IPDA 20/40/60-day highs/lows", group = GRP_LIQ, tooltip = "From the daily candle. Drawn on daily and lower charts.")
+float  sweepMin    = input.float(0.0, "Trade-through needed to count as taken (pips; ticks off forex)", minval = 0, step = 0.1, group = GRP_LIQ)
+int    reclaimBars = input.int(2, "M15 candles allowed to close back inside (raid vs run)", minval = 0, maxval = 10, group = GRP_LIQ,
+     tooltip = "Judged on M15 candles on every chart. Raid: an M15 candle closes back inside on the taking candle or within this many M15 candles after it. Otherwise it is a run.")
+
+string sessAsia = input.session("2000-0000", "Asian range",         group = GRP_SESS)
+string sessLdn  = input.session("0200-0500", "London killzone",     group = GRP_SESS)
+string sessAM   = input.session("0830-1100", "New York AM session", group = GRP_SESS)
+string sessPM   = input.session("1330-1630", "New York PM session", group = GRP_SESS)
+
+color  colBSL      = input.color(#1E88E5, "Buyside liquidity (above highs)", group = GRP_LSTY)
+color  colSSL      = input.color(#E53935, "Sellside liquidity (below lows)", group = GRP_LSTY)
+int    sweptFade   = input.int(65, "Swept pool transparency (%)", minval = 0, maxval = 95, group = GRP_LSTY)
+string liqLblSize  = input.string(size.small, "Label size", options = [size.tiny, size.small, size.normal], group = GRP_LSTY)
+int    lblOffset   = input.int(4, "Labels: candles to the right of price", minval = 0, maxval = 50, group = GRP_LSTY)
+float  mergeTolAtr = input.float(0.25, "Merge labels closer than (× ATR)", minval = 0, maxval = 2, step = 0.05, group = GRP_LSTY)
+int    keepSwept   = input.int(10, "Swept pools kept on chart", minval = 0, maxval = 40, group = GRP_LSTY)
+bool   showRaidX   = input.bool(true, "Mark raid wicks with an ✕", group = GRP_LSTY)
+bool   liqAlerts   = input.bool(true, "Alert on raids and runs", group = GRP_LSTY,
+     tooltip = "Create an alert on this indicator with the condition \"Any alert() function call\" to receive these.")
+
+bool   showDaySep  = input.bool(true, "Midnight separators", group = GRP_DAYS, tooltip = "Drawn on charts below the daily timeframe.")
+bool   showDayName = input.bool(true, "Day names",           group = GRP_DAYS)
+string dayTz       = input.string("America/New_York", "Midnight of which timezone", options = ["America/New_York", "Europe/London", "UTC"], group = GRP_DAYS,
+     tooltip = "Calendar days, not trading days. ICT uses New York midnight.")
+string dayLoc      = input.string(location.top, "Day names at the", options = [location.top, location.bottom], group = GRP_DAYS)
+color  colDayName  = input.color(color.new(color.gray, 20), "Day name colour",  group = GRP_DAYS)
+color  colDaySep   = input.color(color.new(color.gray, 50), "Separator colour", group = GRP_DAYS)
+string daySepStyle = input.string(line.style_dotted, "Separator style", options = [line.style_solid, line.style_dotted, line.style_dashed], group = GRP_DAYS)
+int    keepDays    = input.int(30, "Days of separators and killzone boxes kept", minval = 1, maxval = 120, group = GRP_DAYS)
+
+bool   showBoxes = input.bool(true, "Show killzone boxes", group = GRP_BOX, tooltip = "Drawn on charts of 1 hour or lower. Each box spans the killzone's time window and its high-to-low range.")
+bool   boxAsia   = input.bool(true, "", inline = "asia", group = GRP_BOX)
+string txtAsia   = input.string("Asia", "", inline = "asia", group = GRP_BOX)
+color  colAsia   = input.color(#7E57C2, "", inline = "asia", group = GRP_BOX)
+bool   boxLdn    = input.bool(true, "", inline = "ldn", group = GRP_BOX)
+string txtLdn    = input.string("London KZ", "", inline = "ldn", group = GRP_BOX)
+color  colLdn    = input.color(#26A69A, "", inline = "ldn", group = GRP_BOX)
+bool   boxAM     = input.bool(true, "", inline = "am", group = GRP_BOX)
+string txtAM     = input.string("NY AM", "", inline = "am", group = GRP_BOX)
+color  colAM     = input.color(#FFA726, "", inline = "am", group = GRP_BOX)
+bool   boxPM     = input.bool(true, "", inline = "pm", group = GRP_BOX)
+string txtPM     = input.string("NY PM", "", inline = "pm", group = GRP_BOX)
+color  colPM     = input.color(#EC407A, "", inline = "pm", group = GRP_BOX)
+int    boxFill   = input.int(88, "Fill transparency (%)", minval = 0, maxval = 100, group = GRP_BOX)
+bool   boxRange  = input.bool(true, "Show the killzone's range in the label", group = GRP_BOX)
+string boxTxtPos = input.string("Top", "Label position", options = ["Top", "Bottom"], group = GRP_BOX)
+string boxTxtSz  = input.string(size.small, "Label size", options = [size.tiny, size.small, size.normal], group = GRP_BOX)
+
+bool   showPo3   = input.bool(true, "Show Power of 3 (accumulation · manipulation · distribution)", group = GRP_PO3,
+     tooltip = "Drawn on charts of 1 hour or lower. A = the accumulation range. M = the Judas swing: from the true day open to whichever of the day's extremes forms first. D = the expansion from that extreme to the other one.")
+string po3Acc    = input.session("2000-0000", "Accumulation window", group = GRP_PO3,
+     tooltip = "Default: the Asian range. When it matches the Asian range killzone, the A box replaces the Asia box.")
+string po3Cycle  = input.session("0000-1700", "True day: open to close", group = GRP_PO3,
+     tooltip = "Starts at the true day open (midnight New York). Manipulation and distribution are found inside this window.")
+bool   po3A      = input.bool(true, "", inline = "pa", group = GRP_PO3)
+string po3TxtA   = input.string("A · Accumulation", "", inline = "pa", group = GRP_PO3)
+color  po3ColA   = input.color(#607D8B, "", inline = "pa", group = GRP_PO3)
+bool   po3M      = input.bool(true, "", inline = "pm", group = GRP_PO3)
+string po3TxtM   = input.string("M · Manipulation", "", inline = "pm", group = GRP_PO3)
+color  po3ColM   = input.color(#F4511E, "", inline = "pm", group = GRP_PO3)
+bool   po3D      = input.bool(true, "", inline = "pd", group = GRP_PO3)
+string po3TxtD   = input.string("D · Distribution", "", inline = "pd", group = GRP_PO3)
+color  po3ColD   = input.color(#43A047, "", inline = "pd", group = GRP_PO3)
+bool   po3OpenLn = input.bool(true, "True day open line", group = GRP_PO3)
+int    po3Fill   = input.int(85, "Fill transparency (%)", minval = 0, maxval = 100, group = GRP_PO3)
+bool   po3Sizes  = input.bool(true, "Show sizes and what the Judas swing took", group = GRP_PO3)
+

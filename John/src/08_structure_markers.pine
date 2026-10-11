@@ -1,0 +1,109 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// MARKET STRUCTURE · MARKERS
+// ════════════════════════════════════════════════════════════════════════════════
+// Follows one structure timeframe's candles on this chart, recording which chart candle made each
+// structure candle's high and low. A partly loaded first structure candle is not recorded.
+trackStep(TfTrack k, bool isNew, int openT, bool startsFull) =>
+    if isNew
+        if not na(k.key) and k.full
+            k.hiMap.put(k.key, k.hiT)
+            k.loMap.put(k.key, k.loT)
+            k.keys.push(k.key)
+            if k.keys.size() > 3000
+                int old = k.keys.shift()
+                k.hiMap.remove(old)
+                k.loMap.remove(old)
+        k.key  := openT
+        k.full := startsFull
+        k.hi   := high
+        k.lo   := low
+        k.hiT  := time
+        k.loT  := time
+    else if not na(k.key)
+        if high > k.hi
+            k.hi  := high
+            k.hiT := time
+        if low < k.lo
+            k.lo  := low
+            k.loT := time
+    k
+
+// Draws or updates one marker: highs get a downward triangle above the candle, lows an upward
+// triangle below it. Size follows the highest timeframe shown on it; the tag lists every timeframe,
+// highest first, e.g. "D LTL · H4 LTL · H1 ITL".
+renderMark(Mark m) =>
+    string txt = ""
+    int    top = 0
+    for r = 4 to 1
+        int idx = m.ranks.indexof(r)
+        if idx >= 0 and tfShown(r)
+            int    tier = m.tiers.get(idx)
+            string nm   = tier >= 3 and showLT ? "LT" : showIT ? "IT" : ""
+            if nm != ""
+                txt := txt + (txt == "" ? "" : " · ") + tfName(r) + " " + nm + (m.isHigh ? "H" : "L")
+                if top == 0
+                    top := r
+    if top == 0
+        if not na(m.lb)
+            label.delete(m.lb)
+            m.lb := na
+    else
+        string tip = txt + "\n" + fmtPx(m.price) + "\n" + fmtTime(m.t)
+        if na(m.lb)
+            m.lb := label.new(x = m.t, y = m.price, text = showTags ? txt : "", xloc = xloc.bar_time,
+                 yloc = m.isHigh ? yloc.abovebar : yloc.belowbar, color = colMarker,
+                 style = m.isHigh ? label.style_triangledown : label.style_triangleup,
+                 textcolor = colMarker, size = tfSize(top), tooltip = tip)
+        else
+            label.set_text(m.lb, showTags ? txt : "")
+            label.set_size(m.lb, tfSize(top))
+            label.set_tooltip(m.lb, tip)
+    m
+
+// Records that the chart candle at time `t` is a tier-`tier` swing (2 = IT, 3 = LT) on timeframe `r`.
+addMark(int r, int tier, float price, int t, bool isHigh) =>
+    string key = str.tostring(t) + (isHigh ? "H" : "L")
+    Mark   m   = marks.get(key)
+    if na(m)
+        m := Mark.new(t, price, isHigh, na, array.new<int>(), array.new<int>())
+        marks.put(key, m)
+        markKeys.push(key)
+        if markKeys.size() > maxMarkers
+            Mark old = marks.remove(markKeys.shift())
+            if not na(old)
+                if not na(old.lb)
+                    label.delete(old.lb)
+    int idx = m.ranks.indexof(r)
+    if idx >= 0
+        m.tiers.set(idx, math.max(m.tiers.get(idx), tier))
+    else
+        m.ranks.push(r)
+        m.tiers.push(tier)
+    renderMark(m)
+
+// Takes in what one structure timeframe's last closed candle confirmed (once, on the first chart
+// candle of that timeframe's next candle).
+processTf(int r, bool isNew, TfTrack k, float itH, int itHt, bool itHu, float ltH, int ltHt, float eqH, int eqHt, float itL, int itLt, bool itLu, float ltL, int ltLt, float eqL, int eqLt, float tfAtr) =>
+    if isNew
+        if not na(itH)
+            int t = exactTime(k, itHt, true)
+            addMark(r, 2, itH, t, true)
+            if itHu and swingPoolsOn(r)
+                addSwingPool(r, itH, t, itHt, true)
+        if not na(ltH)
+            addMark(r, 3, ltH, exactTime(k, ltHt, true), true)
+            promoteSwingPool(r, ltHt, true)
+        if not na(eqH) and eqPoolsOn(r)
+            addEqualPool(r, eqH, true, exactTime(k, eqHt, true), eqTolAtr * tfAtr)
+        if not na(itL)
+            int t = exactTime(k, itLt, false)
+            addMark(r, 2, itL, t, false)
+            if itLu and swingPoolsOn(r)
+                addSwingPool(r, itL, t, itLt, false)
+        if not na(ltL)
+            addMark(r, 3, ltL, exactTime(k, ltLt, false), false)
+            promoteSwingPool(r, ltLt, false)
+        if not na(eqL) and eqPoolsOn(r)
+            addEqualPool(r, eqL, false, exactTime(k, eqLt, false), eqTolAtr * tfAtr)
+    r
+

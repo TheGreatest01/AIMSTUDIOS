@@ -1,0 +1,20 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// John — ICT Engine
+// Built module by module from the ICT 2016/2017 Core Content and the 2022 Mentorship.
+// Detection rules are specified in "John — ICT Concept Detection Spec" (Part numbers referenced below).
+// Generated from John/src/ by John/build.py: edit the module files there, not this file.
+//
+// Top-down by design: market structure is read only from Daily, H4, H1 and M15 candles, whatever the
+// chart's timeframe, so a level means the same thing on every chart. A chart shows the structure of its
+// own timeframe and every higher one: an M1 chart shows all four, an H4 chart shows H4 and Daily.
+// M1/M5 candles never decide structure, and raids vs runs are always judged on M15 candles.
+//
+// Modules in this file:
+//   Market structure · ITH/ITL and LTH/LTL on D, H4, H1, M15 (Spec Part 2.1–2.2)
+//   Liquidity map    · BSL/SSL pools, equal highs/lows, raid vs run (Spec Part 3.1–3.3)
+//   Time map         · midnight separators, day names, killzone boxes (Spec Part 1.2–1.3, 5.1)
+//   Power of 3       · accumulation, manipulation (Judas swing) and distribution boxes (Spec Part 5.3)
+
+//@version=6
+indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+

@@ -12,32 +12,48 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 
 | Module | Spec part | Status |
 | --- | --- | --- |
-| Swing tiers: STH/STL, ITH/ITL, LTH/LTL | 2.1–2.2 | Built |
+| Market structure (top-down D · H4 · H1 · M15): ITH/ITL, LTH/LTL | 2.1–2.2 | Built |
 | Liquidity map: BSL/SSL pools, equal highs/lows, raid vs run | 3.1–3.3 | Built |
-| Time map: midnight separators, day names, session boxes | 1.2–1.3, 5.1 | Built |
+| Time map: midnight separators, day names, killzone boxes | 1.2–1.3, 5.1 | Built |
 | Daily Bias engine | 8 | Next |
-| PD arrays, structure (BOS/MSS), sessions, setups | 4–7, 9 | Planned |
+| PD arrays, structure (BOS/MSS), setups | 4–7, 9 | Planned |
 
-## Swing tiers
+## Top-down by design
+
+John reads market structure **only from Daily, H4, H1 and M15 candles**, whatever timeframe the chart is on. A Daily ITL is the same Daily ITL on the H4, M15 or M1 chart.
+
+- **What each chart shows:** its own timeframe's structure and every higher one.
+
+| Chart | Structure shown |
+| --- | --- |
+| Daily | D |
+| H4 | D, H4 |
+| H1 | D, H4, H1 |
+| M15, M5, M1 | D, H4, H1, M15 |
+
+- **M1 and M5 candles never decide structure.** On those charts they are used only to place each swing's marker on the exact candle that made the high or low.
+- **Raids and runs are always judged on M15 candles,** so the verdict doesn't change when you switch timeframes.
+
+## Market structure
+
+On each of D, H4, H1 and M15, using that timeframe's own candles:
 
 - **Short-term high (STH):** a candle whose high is strictly above the high of the candle before it and at least equal to the high of the candle after it. The number of candles on each side is the *Short-term swing length* input (default 1, the classic 3-candle swing).
 - **Intermediate-term high (ITH):** a short-term high with a lower short-term high on each side.
 - **Long-term high (LTH):** an intermediate-term high with a lower intermediate-term high on each side.
-- Lows mirror this. All tiers are computed on the chart's own timeframe.
+- Lows mirror this.
 
-**Markers:**
-- Highs get a downward triangle above the candle; lows get an upward triangle below it.
-- ITH/ITL and LTH/LTL markers are black, and long-term markers are drawn larger.
-- Short-term markers are optional and shown in grey.
-- Hover over any marker to see its tier, price and New York time.
+**Markers:** black triangles, pointing down above the candle for highs and up below the candle for lows.
+- **Size** follows the timeframe: D large, H4 normal, H1 small, M15 tiny.
+- **Tags** name the timeframe and tier, e.g. "H4 LTL".
+- **Shared candles:** when one candle is a swing on several timeframes, they share one marker, e.g. "D LTL · H4 LTL · H1 ITL".
+- **Settings:** each timeframe, each tier, the tags, sizes and colour can be switched or changed.
+- **Tooltip:** hover a marker for its price and New York time.
 
-**Timing:** a marker is drawn only once its swing is confirmed, and is never removed afterwards.
-- A short-term swing is confirmed when the candles on its right have closed.
-- An ITH is confirmed when the *next* short-term high forms, which can be many candles later.
-- An LTH is confirmed when the next ITH forms.
-- When an ITH is promoted to an LTH, its existing triangle grows in place.
-
-On a dark chart theme, change *Marker colour* to a light colour; black is the default.
+**Timing:** a marker appears once that timeframe's candle confirming it has closed, and is never removed afterwards.
+- An ITH is confirmed when that timeframe's *next* short-term high forms.
+- An LTH is confirmed when the next ITH forms, and its marker updates in place.
+- On a dark chart theme, change *Marker colour* to a light colour; black is the default.
 
 ## Liquidity map
 
@@ -47,32 +63,42 @@ John tracks every level where stops are likely to rest: **buyside liquidity** (B
 | --- | --- | --- |
 | PDH / PDL (previous day) | Solid | The day rolls |
 | PWH / PWL (previous week) | Solid, thick | The week rolls |
-| Asia / LDN / NY session high and low (New York time; charts of 1 hour or lower) | Dashed | 24 hours after the session ends |
-| Untaken ITH / ITL and LTH / LTL (from the swing tiers) | Dotted (thick for LTH/LTL) | Over the per-side cap (default 4) |
-| EQH / EQL: two untaken short-term swings ≥ 3 candles apart, within 0.1 × ATR | Solid | Over the per-side cap (4) |
+| Asia / LDN / NY AM / NY PM killzone high and low (charts of 1 hour or lower) | Dashed | 24 hours after the killzone ends |
+| Untaken ITH/ITL and LTH/LTL from D, H4, H1 (M15 optional), e.g. "H4 ITH" | Dotted (thick for LTH/LTL) | Over the cap: newest 3 per side, tier and timeframe |
+| EQH / EQL from H4, H1, M15 (D optional): two untaken short-term swings on that timeframe ≥ 3 of its candles apart, within 0.1 × its ATR | Solid | Over the cap: newest 3 per side and timeframe |
 | IPDA20/40/60 H and L: highs and lows of the last 20, 40, 60 completed days | Dashed | The level rolls to a new value |
 
-**Untaken pools** run to just right of price, each with a label. Labels for pools at nearly the same price on the same side merge into one, e.g. "PDH · ITH".
+**Untaken pools** run to just right of price, each with a label. Labels for pools at nearly the same price on the same side merge into one, e.g. "PDH · H4 ITH".
 
-**Taken pools.** A pool is taken when a closed candle trades beyond it:
-- **Raid:** the candle closes back inside, or a later one does within 2 candles. The line stops at that candle and fades, the label reads "PDH raid", and an ✕ marks the wick. A raid deeper than 1 ATR is tagged "(deep)".
-- **Run:** price stays beyond for 2 more closes. The faded line ends in an arrowhead.
+**Taken pools** are judged on **M15 candles** on every chart:
+- **Raid:** the M15 candle that trades through closes back inside, or one does within the next 2 M15 candles. The line stops at that candle and fades, the label reads "PDH raid", and an ✕ marks the wick.
+- **Deep raid:** a raid deeper than 1 H1 ATR is tagged "(deep)".
+- **Run:** price stays beyond for 2 more M15 closes. The faded line ends in an arrowhead.
 - When one candle takes several pools at the same level, they share one label.
 
-**Tooltips:** hover any label for the price, when the pool formed, how and when it was taken, and the depth in pips and ATR.
+**Tooltips:** hover any label for the price, when the pool formed, how and when it was taken, and the depth in pips and H1 ATR.
 
 **Alerts:** create an alert on John with the condition *Any alert() function call* to be told about every raid and run.
 
 **Data Window:** shows the nearest untaken BSL and SSL.
 
+**Limitation:** swing and equal-high pools only come from swings confirmed inside the chart's loaded history. On an M1 chart, which holds only a week or two, older Daily/H4 swing pools won't appear. PDH/PDL, PWH/PWL and the IPDA levels still cover the major higher-timeframe liquidity there.
+
 ## Time map
 
 - **Midnight separators:** a thin dotted vertical line at every calendar midnight, New York by default (London or UTC optional). This marks calendar days, not trading days. A matching line at the coming midnight closes off today. Over the weekend gap, the line is drawn on the first candle of the new day.
 - **Day names:** Monday, Tuesday, … printed at the top of the chart (or the bottom), centred on each day at the first candle from noon.
-- **Session boxes:** one rectangle per session.
-    - From the first candle, the box spans the session's full time window and grows to the session's high and low as they form.
-    - Each label shows the session name and its range, e.g. "Asia  23.4 pips".
-    - Asia (20:00–00:00), London (02:00–05:00) and New York (07:00–10:00) are on by default; London Close (10:00–12:00) is optional.
-    - Each session has its own on/off switch, label text and colour. Fill, label position and size are shared settings.
-    - Drawn on charts of 1 hour or lower.
+- **Killzone boxes:** one rectangle per killzone (New York time; every time is adjustable).
+
+| Killzone | Default time |
+| --- | --- |
+| Asian range | 20:00–00:00 |
+| London killzone | 02:00–05:00 |
+| New York AM session | 08:30–11:00 |
+| New York PM session | 13:30–16:30 |
+
+- From its first candle, each box spans the killzone's full time window and grows to its high and low as they form.
+- Each label shows the name and the range, e.g. "Asia  23.4 pips".
+- Each killzone has its own on/off switch, label text and colour. Fill, label position and size are shared settings.
+- Drawn on charts of 1 hour or lower.
 - The last 30 days of separators and boxes are kept (adjustable).

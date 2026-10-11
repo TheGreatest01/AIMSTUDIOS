@@ -15,6 +15,7 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 | Market structure (top-down D · H4 · H1 · M15): ITH/ITL, LTH/LTL | 2.1–2.2 | Built |
 | Liquidity map: BSL/SSL pools, equal highs/lows, raid vs run | 3.1–3.3 | Built |
 | Time map: midnight separators, day names, killzone boxes | 1.2–1.3, 5.1 | Built |
+| Power of 3 (AMD): accumulation, manipulation, distribution boxes | 5.3 | Built |
 | Daily Bias engine | 8 | Next |
 | PD arrays, structure (BOS/MSS), setups | 4–7, 9 | Planned |
 
@@ -102,3 +103,20 @@ John tracks every level where stops are likely to rest: **buyside liquidity** (B
 - Each killzone has its own on/off switch, label text and colour. Fill, label position and size are shared settings.
 - Drawn on charts of 1 hour or lower.
 - The last 30 days of separators and boxes are kept (adjustable).
+
+## Power of 3 (AMD)
+
+ICT reads every day as **open → accumulation → manipulation → distribution → close**. On a bullish day, price ranges near the open, makes a false move below it (the Judas swing, which forms the low of the day), then expands to the high and closes near it. A bearish day is the mirror image.
+
+John draws one dashed box per phase (charts of 1 hour or lower, on/off with *Show Power of 3*):
+
+| Box | What it covers |
+| --- | --- |
+| **A · Accumulation** | The accumulation window's high-to-low range (default the Asian range, 20:00–00:00 New York). When it matches the Asian range killzone, the A box replaces the Asia box. |
+| **M · Manipulation** | From the true day open (midnight New York) to whichever of the day's two extremes forms first: the Judas swing. A low first means a bullish day (M ↓); a high first means a bearish one (M ↑). |
+| **D · Distribution** | From that extreme to the opposite extreme, running to the end of the true day (default 17:00). |
+
+- **Labels:** sizes in pips, and what the Judas swing took, e.g. "M · Manipulation ↓ Judas 18.2 pips · took A low · took PDL".
+- **True day open line:** a dotted line marks the midnight open across the day.
+- **Live behaviour:** while the day is running, M and D are marked "(developing)" and follow price. If price later breaks the first extreme, the day's reading can flip.
+- **Settings:** every box has its own on/off switch, label and colour. The two windows, fill and labels are adjustable.

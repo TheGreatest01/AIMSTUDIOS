@@ -12,6 +12,7 @@
 //   Market structure · ITH/ITL and LTH/LTL on D, H4, H1, M15 (Spec Part 2.1–2.2)
 //   Liquidity map    · BSL/SSL pools, equal highs/lows, raid vs run (Spec Part 3.1–3.3)
 //   Time map         · midnight separators, day names, killzone boxes (Spec Part 1.2–1.3, 5.1)
+//   Power of 3       · accumulation, manipulation (Judas swing) and distribution boxes (Spec Part 5.3)
 
 //@version=6
 indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
@@ -25,6 +26,7 @@ const string GRP_SESS   = "Killzones (New York time)"
 const string GRP_LSTY   = "Liquidity display"
 const string GRP_DAYS   = "Days of the week"
 const string GRP_BOX    = "Killzone boxes"
+const string GRP_PO3    = "Power of 3 (AMD)"
 
 bool   showD      = input.bool(true, "Show structure from  D", inline = "tfs", group = GRP_STRUCT)
 bool   showH4     = input.bool(true, "H4",  inline = "tfs", group = GRP_STRUCT)
@@ -110,6 +112,25 @@ bool   boxRange  = input.bool(true, "Show the killzone's range in the label", gr
 string boxTxtPos = input.string("Top", "Label position", options = ["Top", "Bottom"], group = GRP_BOX)
 string boxTxtSz  = input.string(size.small, "Label size", options = [size.tiny, size.small, size.normal], group = GRP_BOX)
 
+bool   showPo3   = input.bool(true, "Show Power of 3 (accumulation · manipulation · distribution)", group = GRP_PO3,
+     tooltip = "Drawn on charts of 1 hour or lower. A = the accumulation range. M = the Judas swing: from the true day open to whichever of the day's extremes forms first. D = the expansion from that extreme to the other one.")
+string po3Acc    = input.session("2000-0000", "Accumulation window", group = GRP_PO3,
+     tooltip = "Default: the Asian range. When it matches the Asian range killzone, the A box replaces the Asia box.")
+string po3Cycle  = input.session("0000-1700", "True day: open to close", group = GRP_PO3,
+     tooltip = "Starts at the true day open (midnight New York). Manipulation and distribution are found inside this window.")
+bool   po3A      = input.bool(true, "", inline = "pa", group = GRP_PO3)
+string po3TxtA   = input.string("A · Accumulation", "", inline = "pa", group = GRP_PO3)
+color  po3ColA   = input.color(#607D8B, "", inline = "pa", group = GRP_PO3)
+bool   po3M      = input.bool(true, "", inline = "pm", group = GRP_PO3)
+string po3TxtM   = input.string("M · Manipulation", "", inline = "pm", group = GRP_PO3)
+color  po3ColM   = input.color(#F4511E, "", inline = "pm", group = GRP_PO3)
+bool   po3D      = input.bool(true, "", inline = "pd", group = GRP_PO3)
+string po3TxtD   = input.string("D · Distribution", "", inline = "pd", group = GRP_PO3)
+color  po3ColD   = input.color(#43A047, "", inline = "pd", group = GRP_PO3)
+bool   po3OpenLn = input.bool(true, "True day open line", group = GRP_PO3)
+int    po3Fill   = input.int(85, "Fill transparency (%)", minval = 0, maxval = 100, group = GRP_PO3)
+bool   po3Sizes  = input.bool(true, "Show sizes and what the Judas swing took", group = GRP_PO3)
+
 // ════════════════════════════════════════════════════════════════════════════════
 // TYPES
 // ════════════════════════════════════════════════════════════════════════════════
@@ -169,6 +190,27 @@ type TfTrack
     map<int, int> loMap
     array<int>    keys
 
+// Power of 3 for one day: the accumulation range, then the true day open and the day's two extremes.
+type Po3State
+    bool  accLive = false
+    float accHi
+    float accLo
+    box   bxA
+    bool  cycLive = false
+    int   c0               // true day open time
+    int   c1               // end of the true day window
+    float openPx
+    float hi
+    float lo
+    int   hiT
+    int   loT
+    float refHi            // accumulation range and previous day's range in force when the day opened
+    float refLo
+    float pdHi
+    float pdLo
+    box   bxM
+    box   bxD
+
 // ════════════════════════════════════════════════════════════════════════════════
 // STATE AND SHARED VALUES
 // ════════════════════════════════════════════════════════════════════════════════
@@ -191,6 +233,12 @@ var Span pmSpan   = Span.new()
 
 var array<box>  sessBoxes = array.new<box>()     // finished and running killzone boxes, oldest first
 var array<line> daySeps   = array.new<line>()    // midnight separators, oldest first
+
+var Po3State    po3      = Po3State.new()
+var array<box>  po3Boxes = array.new<box>()      // A, M and D boxes, oldest first
+var array<line> po3Lines = array.new<line>()     // true day open lines, oldest first
+var float       pdHiVal  = na                    // previous trading day's high and low
+var float       pdLoVal  = na
 
 const string NY_TZ = "America/New_York"
 
@@ -798,6 +846,118 @@ sessionStep(Span s, bool inNow, string tag, string sess, bool boxOn, string name
     s
 
 // ════════════════════════════════════════════════════════════════════════════════
+// POWER OF 3 · ACCUMULATION, MANIPULATION, DISTRIBUTION (Spec 5.3)
+// ════════════════════════════════════════════════════════════════════════════════
+pipsText(float d) =>
+    str.tostring(d / pipSize, "#.#") + pipUnit
+
+po3Box(int l, float t, int r, float b, color col, string txt) =>
+    box bx = box.new(left = l, top = t, right = r, bottom = b, xloc = xloc.bar_time,
+         border_color = color.new(col, 30), border_width = 1, border_style = line.style_dashed,
+         bgcolor = color.new(col, po3Fill), text = txt, text_size = boxTxtSz, text_color = col,
+         text_halign = text.align_left, text_valign = text.align_top)
+    po3Boxes.push(bx)
+    if po3Boxes.size() > keepDays * 3
+        box.delete(po3Boxes.shift())
+    bx
+
+// Redraws M and D from the day's extremes so far. The extreme that formed first after the true day
+// open is the manipulation (Judas swing): a low first makes a bullish day (M below the open, D up to
+// the high); a high first makes a bearish one. Both extremes on one candle: decided by where price
+// now sits against the open. Until the true day window ends, both boxes are marked "developing".
+po3Render(Po3State s) =>
+    bool   bull = s.loT < s.hiT or (s.loT == s.hiT and close >= s.openPx)
+    float  mExt = bull ? s.lo : s.hi
+    int    mT   = bull ? s.loT : s.hiT
+    float  dExt = bull ? s.hi : s.lo
+    string live = s.cycLive ? "  (developing)" : ""
+    string took = ""
+    if bull
+        if not na(s.refLo) and mExt < s.refLo
+            took := took + " · took A low"
+        if not na(s.pdLo) and mExt < s.pdLo
+            took := took + " · took PDL"
+    else
+        if not na(s.refHi) and mExt > s.refHi
+            took := took + " · took A high"
+        if not na(s.pdHi) and mExt > s.pdHi
+            took := took + " · took PDH"
+    string mTxt = po3TxtM + (bull ? " ↓ Judas" : " ↑ Judas") + (po3Sizes ? "  " + pipsText(math.abs(s.openPx - mExt)) + took : "") + live
+    string dTxt = po3TxtD + (bull ? " ↑" : " ↓") + (po3Sizes ? "  " + pipsText(math.abs(dExt - mExt)) : "") + live
+    if po3M
+        if na(s.bxM)
+            s.bxM := po3Box(s.c0, math.max(s.openPx, mExt), mT, math.min(s.openPx, mExt), po3ColM, mTxt)
+        else
+            box.set_lefttop(s.bxM, s.c0, math.max(s.openPx, mExt))
+            box.set_rightbottom(s.bxM, mT, math.min(s.openPx, mExt))
+            box.set_text(s.bxM, mTxt)
+    if po3D
+        if na(s.bxD)
+            s.bxD := po3Box(mT, math.max(mExt, dExt), s.c1, math.min(mExt, dExt), po3ColD, dTxt)
+        else
+            box.set_lefttop(s.bxD, mT, math.max(mExt, dExt))
+            box.set_rightbottom(s.bxD, s.c1, math.min(mExt, dExt))
+            box.set_text(s.bxD, dTxt)
+    s
+
+// One closed candle of Power of 3: grows the accumulation box during its window, then from the true
+// day open tracks the day's high and low (with their times) and redraws M and D. A window is only
+// started on its first candle, so a chart that loads mid-window waits for the next day.
+po3Step(Po3State s, bool inAccNow, bool accStarts, bool inCycNow, bool cycStarts) =>
+    if inAccNow and (s.accLive or accStarts)
+        if not s.accLive
+            s.accLive := true
+            s.accHi   := high
+            s.accLo   := low
+            s.bxA     := na
+            if po3A
+                [t0, t1] = sessWindow(po3Acc)
+                s.bxA := po3Box(t0, high, t1, low, po3ColA, po3TxtA)
+        else
+            s.accHi := math.max(s.accHi, high)
+            s.accLo := math.min(s.accLo, low)
+        if not na(s.bxA)
+            box.set_top(s.bxA, s.accHi)
+            box.set_bottom(s.bxA, s.accLo)
+            box.set_text(s.bxA, po3TxtA + (po3Sizes ? "  " + pipsText(s.accHi - s.accLo) : ""))
+    else if s.accLive
+        s.accLive := false
+    if inCycNow and (s.cycLive or cycStarts)
+        if not s.cycLive
+            [c0, c1] = sessWindow(po3Cycle)
+            s.cycLive := true
+            s.c0      := c0
+            s.c1      := c1
+            s.openPx  := open
+            s.hi      := high
+            s.lo      := low
+            s.hiT     := time
+            s.loT     := time
+            s.refHi   := s.accHi
+            s.refLo   := s.accLo
+            s.pdHi    := pdHiVal
+            s.pdLo    := pdLoVal
+            s.bxM     := na
+            s.bxD     := na
+            if po3OpenLn
+                po3Lines.push(line.new(x1 = c0, y1 = open, x2 = c1, y2 = open, xloc = xloc.bar_time,
+                     color = color.new(color.gray, 30), style = line.style_dotted, width = 1))
+                if po3Lines.size() > keepDays
+                    line.delete(po3Lines.shift())
+        else
+            if high > s.hi
+                s.hi  := high
+                s.hiT := time
+            if low < s.lo
+                s.lo  := low
+                s.loT := time
+        po3Render(s)
+    else if s.cycLive
+        s.cycLive := false
+        po3Render(s)
+    s
+
+// ════════════════════════════════════════════════════════════════════════════════
 // PER-BAR VALUES
 // ════════════════════════════════════════════════════════════════════════════════
 bool newDay  = timeframe.change("D")
@@ -814,6 +974,11 @@ bool inAsia = not na(time(timeframe.period, sessAsia + ":1234567", NY_TZ))
 bool inLdn  = not na(time(timeframe.period, sessLdn  + ":1234567", NY_TZ))
 bool inAM   = not na(time(timeframe.period, sessAM   + ":1234567", NY_TZ))
 bool inPM   = not na(time(timeframe.period, sessPM   + ":1234567", NY_TZ))
+
+bool inAcc    = not na(time(timeframe.period, po3Acc   + ":1234567", NY_TZ))
+bool inCyc    = not na(time(timeframe.period, po3Cycle + ":1234567", NY_TZ))
+bool accStart = inAcc and not inAcc[1] and bar_index > 0
+bool cycStart = inCyc and not inCyc[1] and bar_index > 0
 
 // ════════════════════════════════════════════════════════════════════════════════
 // ENGINE — runs once per closed chart candle, so nothing appears and then vanishes on a live bar
@@ -847,6 +1012,9 @@ if barstate.isconfirmed
             rollIpda("IPDA40L", "IPDA40 L", ipL40, ipL40t, false)
             rollIpda("IPDA60H", "IPDA60 H", ipH60, ipH60t, true)
             rollIpda("IPDA60L", "IPDA60 L", ipL60, ipL60t, false)
+        if daySpan.full
+            pdHiVal := daySpan.hi
+            pdLoVal := daySpan.lo
         spanStart(daySpan, true)
     else if daySpan.live
         spanUpdate(daySpan)
@@ -867,12 +1035,18 @@ if barstate.isconfirmed
 
     // 4 · Killzone highs/lows and boxes
     bool boxesOn = showBoxes and tfSec <= 3600
-    sessionStep(asiaSpan, inAsia, "Asia",  sessAsia, boxesOn and boxAsia, txtAsia, colAsia)
+    // With Power of 3 on, the A box covers the same window as the Asia box, so it replaces it.
+    bool asiaBoxOn = boxesOn and boxAsia and not (showPo3 and po3A and po3Acc == sessAsia)
+    sessionStep(asiaSpan, inAsia, "Asia",  sessAsia, asiaBoxOn,           txtAsia, colAsia)
     sessionStep(ldnSpan,  inLdn,  "LDN",   sessLdn,  boxesOn and boxLdn,  txtLdn,  colLdn)
     sessionStep(amSpan,   inAM,   "NY AM", sessAM,   boxesOn and boxAM,   txtAM,   colAM)
     sessionStep(pmSpan,   inPM,   "NY PM", sessPM,   boxesOn and boxPM,   txtPM,   colPM)
 
-    // 5 · Raid/run on M15 candles, the same decision on every chart timeframe:
+    // 5 · Power of 3 (accumulation, manipulation, distribution)
+    if showPo3 and tfSec <= 3600
+        po3Step(po3, inAcc, accStart, inCyc, cycStart)
+
+    // 6 · Raid/run on M15 candles, the same decision on every chart timeframe:
     //     below M15 — the M15 candle that just closed; M15 — this candle; above M15 — every M15 candle inside this one.
     array<float> cH = array.new<float>()
     array<float> cL = array.new<float>()

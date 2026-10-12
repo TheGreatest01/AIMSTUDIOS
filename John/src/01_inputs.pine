@@ -25,7 +25,7 @@ string sizeH1     = input.string(size.small,  "Marker size  H1",  options = [siz
 string sizeM15    = input.string(size.tiny,   "M15",              options = [size.tiny, size.small, size.normal, size.large, size.huge], inline = "sz2", group = GRP_STRUCT)
 int    swingLen   = input.int(1, "Short-term swing length", minval = 1, maxval = 5, group = GRP_STRUCT,
      tooltip = "Candles required on each side of a short-term high/low on each structure timeframe. 1 = ICT's classic 3-candle swing.")
-int    maxMarkers = input.int(300, "Max markers kept on chart", minval = 50, maxval = 350, group = GRP_STRUCT,
+int    maxMarkers = input.int(220, "Max markers kept on chart", minval = 50, maxval = 300, group = GRP_STRUCT,
      tooltip = "Oldest markers are removed first. The rest of the 500-label budget is kept for liquidity labels.")
 
 bool   liqPD       = input.bool(true, "Previous day high/low (PDH / PDL)",  group = GRP_LIQ, tooltip = "Drawn on charts below the daily timeframe.")

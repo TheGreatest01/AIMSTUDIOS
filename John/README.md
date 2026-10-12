@@ -29,10 +29,12 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 | `12_engine` | The once-per-closed-candle engine |
 | `13_render` | Pool lines and labels at the last candle |
 | `14_days` | Midnight separators and day names |
-| `15_daily_bias` | Daily bias votes, score and the bias table |
-| `16_data_window` | Data Window outputs |
+| `15_daily_bias` | Daily bias votes, score, DOL, invalidation and the bias table |
+| `16_pd_arrays` | FVGs, order blocks and BOS/MSS from D, H4, H1, M15 |
+| `17_setups` | 2022 model on M15: raid → MSS → FVG entry, stop, targets, paper stats |
+| `18_data_window` | Data Window outputs |
 
-After editing a module, run `python3 John/build.py` to regenerate `pine/John.pine`. `python3 John/build.py --check` fails if the generated file is stale or was hand-edited. Pine needs everything defined before it's used, so a new module goes in the manifest after whatever it depends on.
+After editing a module, run `python3 John/build.py` to regenerate `pine/John.pine`, then `python3 John/lint.py`. The linter catches Pine errors that are easy to miss: a function modifying a global, a function or global used before it is defined, and wrapped lines indented by a multiple of 4. `python3 John/build.py --check` fails if the generated file is stale or was hand-edited. Pine needs everything defined before it's used, so a new module goes in the manifest after whatever it depends on.
 
 ## Modules
 
@@ -43,7 +45,8 @@ After editing a module, run `python3 John/build.py` to regenerate `pine/John.pin
 | Time map: midnight separators, day names, killzone boxes | 1.2–1.3, 5.1 | Built |
 | Power of 3 (AMD): accumulation, manipulation, distribution boxes | 5.3 | Built |
 | Daily bias: six votes → score → Bullish / Bearish / Neutral table | 8 | Built |
-| PD arrays, structure (BOS/MSS), setups | 4–7, 9 | Planned |
+| PD arrays: FVGs, order blocks, BOS/MSS (D · H4 · H1 · M15) | 2.3–2.4, 4 | Built |
+| Setups: 2022 model with entry, stop-loss, TP1/TP2 and paper stats | 9 | Built |
 
 ## Top-down by design
 
@@ -172,3 +175,47 @@ The bias for a day uses only daily and weekly candles that closed before the day
 - **Classification:** |score| ≥ 0.30 is Bullish/Bearish, and ≥ 0.55 is strong.
 - **Settings:** *Show the score and the six votes* expands the table. Every weight and threshold can be changed.
 - **Alerts and Data Window:** an alert fires with each new day's bias, and the Data Window shows the score.
+
+**Draw on liquidity and invalidation** (fixed when the day opens):
+- **DOL:** the nearest untaken pool in the bias direction at least 0.3 × the average daily range away. It's drawn as a thick dashed line labelled "DOL · …" and shown in the table, with "✓ hit" once reached.
+- **Invalidation:** the level the bias rests on (the raid extreme or FVG edge behind it), otherwise yesterday's low (bullish) or high (bearish).
+- **Invalidated:** an M15 close beyond the invalidation level turns the table cell grey ("· invalidated"). Setups stop for that direction for the rest of the day.
+
+## PD arrays and structure breaks
+
+From D, H4, H1 and M15 candles (a chart shows its own timeframe and every higher one), each switchable per timeframe:
+
+| Array | Rule | Default timeframes |
+| --- | --- | --- |
+| FVG | Candle 3's low above candle 1's high (bullish) or its high below candle 1's low (bearish), ≥ 0.1 × that timeframe's ATR | H4, H1 |
+| Order block | The last opposite-colour candle before a displacement that closes through a swing | H4, H1 |
+| BOS / MSS | A displaced close through the last swing high/low; MSS when it turns the previous break's direction, BOS when it continues it | H4, H1, M15 |
+
+- **Zones** are boxes with a dashed midpoint (the FVG's consequent encroachment, the OB's mean threshold). They run right until an M15 candle closes through the far edge, then stop there and fade.
+- **Midpoint hit:** a zone whose midpoint has been reached is labelled "CE hit" or "MT hit".
+
+## Setups · ICT 2022 model
+
+Signals come from **M15 candles** on every chart up to H4, inside the enabled killzones (London KZ, NY AM, NY PM) and in the direction of the daily bias. Long setup (shorts mirror it):
+
+1. **Raid:** a sellside pool (PDL, a killzone low, a swing low, equal lows, an IPDA low…) is traded through.
+2. **MSS:** within 10 M15 candles, a close above the swing high that began the drop into the raid, with displacement (bodies ≥ 1.2 × M15 ATR, each ≥ 60% of its candle).
+3. **Entry:** the first FVG of that displacement leg: its edge (default), its midpoint, or the OTE 70.5% of the leg.
+4. **Stop:** 1 pip below the raid low. **TP1:** the displacement high. **TP2:** the day's DOL if beyond TP1, otherwise the next untaken buyside pool, otherwise 2R.
+5. **Filter:** the setup is only taken if reward:risk to TP2 is at least 2.
+
+**On the chart:**
+- A green target box (entry → TP2) and a red risk box (entry → stop), with TP1 dotted.
+- A label with entry, stop, TP1, TP2 and R:R.
+- A London setup whose raid took the Asian range is tagged "Judas".
+
+**Order and trade handling:**
+- The order waits until the killzone ends. It's dropped if price reaches TP1 first or closes through the FVG.
+- Once filled: 50% closes at TP1 and the stop moves to entry. The rest runs to TP2, the stop, or 16:00 New York.
+- The result is printed in R ("+2.6R TP2", "−1.0R SL", "+0.5R stop at entry").
+
+**Stats and alerts:**
+- The stats table (bottom right) shows setups, fills, win rate, and average and total R on the loaded history.
+- Alerts fire on each new setup, fill and exit.
+
+These are paper results from historical candles, not advice: fills assume price traded through the entry, and when the stop and entry fall in the same M15 candle the stop is assumed hit. TradingView only provides M15 data for recent history, so setups and stats cover that period.

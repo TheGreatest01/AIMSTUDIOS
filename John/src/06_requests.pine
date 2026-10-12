@@ -17,8 +17,8 @@ string reqM15 = tfSec <= 900   ? "15"  : timeframe.period
 
 // M15 candles for raid/run decisions. Charts below M15 get the last closed M15 candle at the start of
 // each new one; charts above M15 get every M15 candle inside each of their own candles.
-[m15H, m15L, m15C, m15T] = request.security(syminfo.tickerid, reqM15, [high[1], low[1], close[1], time[1]], lookahead = barmerge.lookahead_on)
-[ltfH, ltfL, ltfC, ltfT] = request.security_lower_tf(syminfo.tickerid, "15", [high, low, close, time], ignore_invalid_timeframe = true)
+[m15O, m15H, m15L, m15C, m15T] = request.security(syminfo.tickerid, reqM15, [open[1], high[1], low[1], close[1], time[1]], lookahead = barmerge.lookahead_on)
+[ltfO, ltfH, ltfL, ltfC, ltfT] = request.security_lower_tf(syminfo.tickerid, "15", [open, high, low, close, time], ignore_invalid_timeframe = true)
 
 // Reference size for "deep" raids: the H1 ATR, so the judgement is the same on every chart.
 float atrRef = request.security(syminfo.tickerid, "60", ta.atr(14)[1], lookahead = barmerge.lookahead_on)

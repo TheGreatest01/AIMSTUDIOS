@@ -3,6 +3,7 @@
 // ════════════════════════════════════════════════════════════════════════════════
 var array<Pool>       pools    = array.new<Pool>()       // untaken or pending pools, oldest first
 var array<Pool>       swept    = array.new<Pool>()       // raided or run pools still drawn, oldest first
+var array<Pool>       takenNow = array.new<Pool>()       // pools first traded through on this chart candle (for setups)
 var map<string, Mark> marks    = map.new<string, Mark>()
 var array<string>     markKeys = array.new<string>()     // marker keys, oldest first
 

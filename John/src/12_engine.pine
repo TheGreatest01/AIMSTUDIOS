@@ -64,37 +64,8 @@ if barstate.isconfirmed
     if showPo3 and tfSec <= 3600
         po3Step(po3, inAcc, accStart, inCyc, cycStart)
 
-    // 6 · Raid/run on M15 candles, the same decision on every chart timeframe:
-    //     below M15 — the M15 candle that just closed; M15 — this candle; above M15 — every M15 candle inside this one.
-    string       judgeNow = "M15"
-    array<float> cH = array.new<float>()
-    array<float> cL = array.new<float>()
-    array<float> cC = array.new<float>()
-    array<int>   cT = array.new<int>()
-    if tfSec < 900
-        if newM15 and not na(m15C)
-            cH.push(m15H)
-            cL.push(m15L)
-            cC.push(m15C)
-            cT.push(m15T)
-    else if tfSec == 900
-        cH.push(high)
-        cL.push(low)
-        cC.push(close)
-        cT.push(time)
-    else if not na(ltfC) and ltfC.size() > 0
-        cH := ltfH
-        cL := ltfL
-        cC := ltfC
-        cT := ltfT
-    else
-        // TradingView only supplies M15 data for recent history; further back, the chart's own candle
-        // judges the raid/run instead, so old pools still end where price actually took them.
-        cH.push(high)
-        cL.push(low)
-        cC.push(close)
-        cT.push(time)
-        judgeNow := tfSec == 86400 ? "daily" : tfSec == 14400 ? "H4" : tfSec == 3600 ? "H1" : timeframe.period
+    // 6 · Raid/run on the M15 candle feed (built in PER-BAR VALUES), the same decision on every chart.
+    takenNow.clear()
     float cMaxH = cH.size() > 0 ? cH.max() : na
     float cMinL = cL.size() > 0 ? cL.min() : na
     float thr   = sweepMin * pipSize
@@ -110,7 +81,10 @@ if barstate.isconfirmed
                     p.judge := judgeNow
                 for k = 0 to cH.size() - 1
                     if p.state <= 1 and cT.get(k) >= p.activeFrom
+                        int before = p.state
                         checkSweep(p, cH.get(k), cL.get(k), cC.get(k), cT.get(k))
+                        if before == 0 and p.state >= 1
+                            takenNow.push(p)
                 if p.state == 2 or p.state == 3
                     markSwept(p)
         if p.state <= 1

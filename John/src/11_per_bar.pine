@@ -21,3 +21,44 @@ bool inCyc    = not na(time(timeframe.period, po3Cycle + ":1234567", NY_TZ))
 bool accStart = inAcc and not inAcc[1] and bar_index > 0
 bool cycStart = inCyc and not inCyc[1] and bar_index > 0
 
+// M15 candles available on this chart candle, oldest first. Raids/runs, bias invalidation, PD-array
+// mitigation and setups all read them, so every decision is the same on every chart timeframe:
+//   below M15 — the M15 candle that just closed (on the first chart candle of the next one);
+//   M15 — this candle; above M15 — every M15 candle inside this one.
+// TradingView only supplies M15 data for recent history; further back the chart's own candle stands in
+// (feedIsM15 = false) so pools still end where price took them. Setups only use real M15 candles.
+array<float> cO = array.new<float>()
+array<float> cH = array.new<float>()
+array<float> cL = array.new<float>()
+array<float> cC = array.new<float>()
+array<int>   cT = array.new<int>()
+bool   feedIsM15 = true
+string judgeNow  = "M15"
+if tfSec < 900
+    if newM15 and not na(m15C)
+        cO.push(m15O)
+        cH.push(m15H)
+        cL.push(m15L)
+        cC.push(m15C)
+        cT.push(m15T)
+else if tfSec == 900
+    cO.push(open)
+    cH.push(high)
+    cL.push(low)
+    cC.push(close)
+    cT.push(time)
+else if not na(ltfC) and ltfC.size() > 0
+    cO := ltfO
+    cH := ltfH
+    cL := ltfL
+    cC := ltfC
+    cT := ltfT
+else
+    cO.push(open)
+    cH.push(high)
+    cL.push(low)
+    cC.push(close)
+    cT.push(time)
+    feedIsM15 := false
+    judgeNow  := tfSec == 86400 ? "daily" : tfSec == 14400 ? "H4" : tfSec == 3600 ? "H1" : timeframe.period
+

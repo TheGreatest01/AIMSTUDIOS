@@ -1,0 +1,255 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// PD ARRAYS AND STRUCTURE BREAKS (Spec Part 2.3–2.4, 4.1, 4.5)
+// ════════════════════════════════════════════════════════════════════════════════
+// FVGs, order blocks and BOS/MSS from D, H4, H1 and M15 candles (top-down: a chart shows its own
+// timeframe and every higher one). Each zone stays live until an M15 candle closes through its far
+// edge, the same on every chart.
+const string GRP_PD = "PD arrays and structure breaks (Spec Part 2, 4)"
+
+bool  fvgD    = input.bool(false, "FVGs from  D",   inline = "pdf", group = GRP_PD)
+bool  fvgH4   = input.bool(true,  "H4",             inline = "pdf", group = GRP_PD)
+bool  fvgH1   = input.bool(true,  "H1",             inline = "pdf", group = GRP_PD)
+bool  fvgM15  = input.bool(false, "M15",            inline = "pdf", group = GRP_PD,
+     tooltip = "Spec 4.1: candle 3's low above candle 1's high (bullish) or candle 3's high below candle 1's low (bearish), at least 0.1 × that timeframe's ATR.")
+bool  obD     = input.bool(false, "Order blocks from  D", inline = "pdo", group = GRP_PD)
+bool  obH4    = input.bool(true,  "H4",                   inline = "pdo", group = GRP_PD)
+bool  obH1    = input.bool(true,  "H1",                   inline = "pdo", group = GRP_PD)
+bool  obM15   = input.bool(false, "M15",                  inline = "pdo", group = GRP_PD,
+     tooltip = "Spec 4.5: the last opposite-colour candle before a displacement that closes through a swing.")
+bool  brD     = input.bool(false, "BOS / MSS from  D", inline = "pdb", group = GRP_PD)
+bool  brH4    = input.bool(true,  "H4",                inline = "pdb", group = GRP_PD)
+bool  brH1    = input.bool(true,  "H1",                inline = "pdb", group = GRP_PD)
+bool  brM15   = input.bool(true,  "M15",               inline = "pdb", group = GRP_PD,
+     tooltip = "Spec 2.4: a close through the last swing high/low with displacement. MSS when it turns the direction of the previous break, BOS when it continues it.")
+float pdDisp  = input.float(1.0, "Displacement: bodies ≥ × that timeframe's ATR", minval = 0.3, step = 0.1, group = GRP_PD)
+color colFvgU = input.color(#26A69A, "FVG bullish", inline = "pdc1", group = GRP_PD)
+color colFvgD = input.color(#EF5350, "bearish",     inline = "pdc1", group = GRP_PD)
+color colObU  = input.color(#42A5F5, "OB bullish",  inline = "pdc2", group = GRP_PD)
+color colObD  = input.color(#FFA726, "bearish",     inline = "pdc2", group = GRP_PD)
+int   pdFill  = input.int(85, "Zone fill transparency (%)", minval = 0, maxval = 100, group = GRP_PD)
+bool  pdCE    = input.bool(true, "Midpoint line (FVG consequent encroachment, OB mean threshold)", group = GRP_PD)
+int   pdKeep  = input.int(3, "Live zones kept per kind, side and timeframe", minval = 1, maxval = 10, group = GRP_PD)
+int   pdDone  = input.int(10, "Closed-through zones kept", minval = 0, maxval = 40, group = GRP_PD)
+
+// One FVG or order block. state: 0 fresh · 1 tapped · 2 midpoint reached · 3 closed through.
+type Zone
+    float  top
+    float  bot
+    bool   bull
+    int    rank
+    string kind
+    int    activeFrom
+    int    state = 0
+    box    bx
+    line   mid
+
+var array<Zone>  zones    = array.new<Zone>()      // live zones, oldest first
+var array<Zone>  zonesOff = array.new<Zone>()      // closed-through zones still drawn
+var array<line>  brLines  = array.new<line>()
+var array<label> brLabels = array.new<label>()
+
+// Runs on one structure timeframe's candles (through request.security). Reports, for the candle that
+// just closed: a new bullish/bearish FVG, a close through the last swing high/low with displacement
+// (level, swing time, direction, MSS or BOS) and the order block behind that displacement.
+pdEngine(int n, float dispK) =>
+    var float sh      = na
+    var int   shT     = na
+    var float sl      = na
+    var int   slT     = na
+    var int   lastDir = 0
+    float a     = ta.atr(14)
+    bool  newSH = isSwingHigh(n)
+    bool  newSL = isSwingLow(n)
+    float bfTop = na
+    float bfBot = na
+    int   bfT   = na
+    float sfTop = na
+    float sfBot = na
+    int   sfT   = na
+    if low > high[2] and low - high[2] >= 0.1 * a
+        bfTop := low
+        bfBot := high[2]
+        bfT   := time[2]
+    if high < low[2] and low[2] - high >= 0.1 * a
+        sfTop := low[2]
+        sfBot := high
+        sfT   := time[2]
+    if newSH
+        sh  := high[n]
+        shT := time[n]
+    if newSL
+        sl  := low[n]
+        slT := time[n]
+    bool  up      = close > open
+    float runBody = 0.0
+    bool  clean   = true
+    for i = 0 to 2
+        if up ? close[i] > open[i] : close[i] < open[i]
+            runBody += math.abs(close[i] - open[i])
+            if math.abs(close[i] - open[i]) < 0.6 * (high[i] - low[i])
+                clean := false
+        else
+            break
+    bool  disp  = clean and runBody >= dispK * a
+    float brLvl = na
+    int   brT0  = na
+    int   brDir = 0
+    bool  brMss = false
+    float obTop = na
+    float obBot = na
+    int   obT   = na
+    if not na(sh) and close > sh
+        if disp and up
+            brLvl := sh
+            brT0  := shT
+            brDir := 1
+            brMss := lastDir == -1
+            for i = 1 to 10
+                if close[i] < open[i]
+                    obTop := high[i]
+                    obBot := low[i]
+                    obT   := time[i]
+                    break
+        lastDir := 1
+        sh      := na
+    else if not na(sl) and close < sl
+        if disp and not up
+            brLvl := sl
+            brT0  := slT
+            brDir := -1
+            brMss := lastDir == 1
+            for i = 1 to 10
+                if close[i] > open[i]
+                    obTop := high[i]
+                    obBot := low[i]
+                    obT   := time[i]
+                    break
+        lastDir := -1
+        sl      := na
+    [bfTop[1], bfBot[1], bfT[1], sfTop[1], sfBot[1], sfT[1], brLvl[1], brT0[1], brDir[1], brMss[1], obTop[1], obBot[1], obT[1]]
+
+[dBfTop, dBfBot, dBfT, dSfTop, dSfBot, dSfT, dBrLvl, dBrT0, dBrDir, dBrMss, dObTop, dObBot, dObT] = request.security(syminfo.tickerid, reqD,   pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+[fBfTop, fBfBot, fBfT, fSfTop, fSfBot, fSfT, fBrLvl, fBrT0, fBrDir, fBrMss, fObTop, fObBot, fObT] = request.security(syminfo.tickerid, reqH4,  pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+[hBfTop, hBfBot, hBfT, hSfTop, hSfBot, hSfT, hBrLvl, hBrT0, hBrDir, hBrMss, hObTop, hObBot, hObT] = request.security(syminfo.tickerid, reqH1,  pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+[qBfTop, qBfBot, qBfT, qSfTop, qSfBot, qSfT, qBrLvl, qBrT0, qBrDir, qBrMss, qObTop, qObBot, qObT] = request.security(syminfo.tickerid, reqM15, pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+
+pdOn(string kind, int r) =>
+    kind == "FVG" ? (r == 4 ? fvgD : r == 3 ? fvgH4 : r == 2 ? fvgH1 : fvgM15) : kind == "OB" ? (r == 4 ? obD : r == 3 ? obH4 : r == 2 ? obH1 : obM15) : (r == 4 ? brD : r == 3 ? brH4 : r == 2 ? brH1 : brM15)
+
+zoneColor(Zone z) =>
+    z.kind == "FVG" ? (z.bull ? colFvgU : colFvgD) : (z.bull ? colObU : colObD)
+
+// Closes a zone at time `t`: it stops there and fades (kept = false deletes it instead).
+retireZone(Zone z, int t, bool kept) =>
+    z.state := 3
+    if kept and pdDone > 0
+        color c = zoneColor(z)
+        box.set_right(z.bx, t)
+        box.set_bgcolor(z.bx, color.new(c, math.min(97, pdFill + 8)))
+        box.set_border_color(z.bx, color.new(c, 85))
+        if not na(z.mid)
+            line.set_x2(z.mid, t)
+        zonesOff.push(z)
+        if zonesOff.size() > pdDone
+            Zone old = zonesOff.shift()
+            box.delete(old.bx)
+            if not na(old.mid)
+                line.delete(old.mid)
+    else
+        box.delete(z.bx)
+        if not na(z.mid)
+            line.delete(z.mid)
+    z
+
+addZone(int r, string kind, bool bull, float top, float bot, int t0) =>
+    Zone  z = Zone.new(top, bot, bull, r, kind, time)
+    color c = zoneColor(z)
+    z.bx := box.new(left = t0, top = top, right = time, bottom = bot, xloc = xloc.bar_time,
+         border_color = color.new(c, 60), bgcolor = color.new(c, pdFill), text = tfName(r) + " " + kind,
+         text_size = size.tiny, text_color = color.new(c, 10), text_halign = text.align_right, text_valign = text.align_center)
+    if pdCE
+        z.mid := line.new(x1 = t0, y1 = (top + bot) / 2, x2 = time, y2 = (top + bot) / 2, xloc = xloc.bar_time,
+             color = color.new(c, 40), style = line.style_dashed, width = 1)
+    zones.push(z)
+    int n = 0
+    for i = zones.size() - 1 to 0
+        Zone q = zones.get(i)
+        if q.state < 3 and q.kind == kind and q.bull == bull and q.rank == r
+            n += 1
+            if n > pdKeep
+                retireZone(q, time, false)
+    z
+
+drawBreak(int r, float lvl, int t0, int dir, bool mss) =>
+    color c = dir == 1 ? colFvgU : colFvgD
+    brLines.push(line.new(x1 = t0, y1 = lvl, x2 = time, y2 = lvl, xloc = xloc.bar_time, color = c, style = line.style_solid, width = 1))
+    brLabels.push(label.new(x = time, y = lvl, text = tfName(r) + (mss ? " MSS" : " BOS"), xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(c, 100), style = dir == 1 ? label.style_label_down : label.style_label_up, textcolor = c, size = size.tiny))
+    if brLines.size() > 20
+        line.delete(brLines.shift())
+        label.delete(brLabels.shift())
+    r
+
+// Takes in what one timeframe's last closed candle produced (once, on the first chart candle of its next candle).
+processPd(int r, bool isNew, TfTrack k, float bfTop, float bfBot, int bfT, float sfTop, float sfBot, int sfT, float brLvl, int brT0, int brDir, bool brMss, float obTop, float obBot, int obT) =>
+    if isNew
+        if not na(bfTop) and pdOn("FVG", r)
+            addZone(r, "FVG", true, bfTop, bfBot, bfT)
+        if not na(sfTop) and pdOn("FVG", r)
+            addZone(r, "FVG", false, sfTop, sfBot, sfT)
+        if not na(obTop) and pdOn("OB", r)
+            addZone(r, "OB", brDir == 1, obTop, obBot, obT)
+        if brDir != 0 and not na(brLvl) and pdOn("BR", r)
+            drawBreak(r, brLvl, exactTime(k, brT0, brDir == 1), brDir, brMss)
+    r
+
+if barstate.isconfirmed
+    if tfSec <= 86400
+        processPd(4, newDay, trD, dBfTop, dBfBot, dBfT, dSfTop, dSfBot, dSfT, dBrLvl, dBrT0, dBrDir, dBrMss, dObTop, dObBot, dObT)
+    if tfSec <= 14400
+        processPd(3, newH4, trH4, fBfTop, fBfBot, fBfT, fSfTop, fSfBot, fSfT, fBrLvl, fBrT0, fBrDir, fBrMss, fObTop, fObBot, fObT)
+    if tfSec <= 3600
+        processPd(2, newH1, trH1, hBfTop, hBfBot, hBfT, hSfTop, hSfBot, hSfT, hBrLvl, hBrT0, hBrDir, hBrMss, hObTop, hObBot, hObT)
+    if tfSec <= 900
+        processPd(1, newM15, trM15, qBfTop, qBfBot, qBfT, qSfTop, qSfBot, qSfT, qBrLvl, qBrT0, qBrDir, qBrMss, qObTop, qObBot, qObT)
+
+    // Lifecycle on the M15 feed: tapped → midpoint → closed through the far edge (then it stops and fades).
+    if zones.size() > 0 and cC.size() > 0
+        array<Zone> liveZ = array.new<Zone>()
+        for z in zones
+            if z.state < 3
+                int endT = na
+                for k = 0 to cC.size() - 1
+                    if z.state < 3 and cT.get(k) >= z.activeFrom
+                        float m = (z.top + z.bot) / 2
+                        if z.bull
+                            if cL.get(k) <= z.top
+                                z.state := math.max(z.state, 1)
+                            if cL.get(k) <= m
+                                z.state := math.max(z.state, 2)
+                            if cC.get(k) < z.bot
+                                z.state := 3
+                                endT    := cT.get(k)
+                        else
+                            if cH.get(k) >= z.bot
+                                z.state := math.max(z.state, 1)
+                            if cH.get(k) >= m
+                                z.state := math.max(z.state, 2)
+                            if cC.get(k) > z.top
+                                z.state := 3
+                                endT    := cT.get(k)
+                if z.state == 3
+                    retireZone(z, endT, true)
+                else
+                    liveZ.push(z)
+        zones := liveZ
+
+if barstate.islast and zones.size() > 0
+    int xr = time + lblOffset * tfSec * 1000
+    for z in zones
+        box.set_right(z.bx, xr)
+        if not na(z.mid)
+            line.set_x2(z.mid, xr)
+        if z.state == 2
+            box.set_text(z.bx, tfName(z.rank) + " " + z.kind + " · " + (z.kind == "FVG" ? "CE hit" : "MT hit"))
+

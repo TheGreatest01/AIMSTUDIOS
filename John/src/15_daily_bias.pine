@@ -26,6 +26,8 @@ float  strongTh    = input.float(0.55, "Strong at |score| ≥",   minval = 0, ma
 float  modTh       = input.float(0.30, "Bullish/bearish at |score| ≥", minval = 0, maxval = 1, step = 0.05, group = GRP_BIAS,
      tooltip = "Below this the bias is Neutral: a no-trade day.")
 bool   biasAlert   = input.bool(true, "Alert with each new day's bias", group = GRP_BIAS)
+bool   showDol     = input.bool(true, "Draw on liquidity (DOL) and invalidation lines", group = GRP_BIAS,
+     tooltip = "Fixed when the day opens. DOL: the nearest untaken pool in the bias direction at least 0.3 × the average daily range away. Invalidation: the level the bias rests on (the raid extreme or FVG edge behind it), otherwise yesterday's low (bullish) or high (bearish). An M15 close beyond it invalidates the bias for the rest of the day.")
 
 // Spec 8.3 — this candle against the one before it:
 //   close above its high +1 · close below its low −1 · outside candle closing inside ±0.5 by which half
@@ -78,22 +80,27 @@ biasDaily(int n) =>
     // Raid of external liquidity (last swing high/low or the 20-day extreme, closed back inside) points
     // to internal liquidity on the other side; holding a daily FVG above its midpoint points to ERL.
     float f3    = 0.0
+    float f3a   = na                                 // F3's anchor: the raid extreme or the FVG edge it held
     bool  raidH = (not na(sh) and high > sh and close < sh) or (not na(h20p) and high > h20p and close < h20p)
     bool  raidL = (not na(sl) and low < sl and close > sl) or (not na(l20p) and low < l20p and close > l20p)
     if raidH and not raidL
-        f3 := -1.0
+        f3  := -1.0
+        f3a := high
     else if raidL and not raidH
-        f3 := 1.0
+        f3  := 1.0
+        f3a := low
     else if not raidH and not raidL
         if bTop.size() > 0
             for i = bTop.size() - 1 to 0
                 if low <= bTop.get(i) and high >= bBot.get(i)
-                    f3 := close < bBot.get(i) ? -0.5 : close > (bTop.get(i) + bBot.get(i)) / 2 ? 1.0 : 0.0
+                    f3  := close < bBot.get(i) ? -0.5 : close > (bTop.get(i) + bBot.get(i)) / 2 ? 1.0 : 0.0
+                    f3a := f3 == 1.0 ? bBot.get(i) : na
                     break
         if f3 == 0.0 and sTop.size() > 0
             for i = sTop.size() - 1 to 0
                 if high >= sBot.get(i) and low <= sTop.get(i)
-                    f3 := close > sTop.get(i) ? 0.5 : close < (sTop.get(i) + sBot.get(i)) / 2 ? -1.0 : 0.0
+                    f3  := close > sTop.get(i) ? 0.5 : close < (sTop.get(i) + sBot.get(i)) / 2 ? -1.0 : 0.0
+                    f3a := f3 == -1.0 ? sTop.get(i) : na
                     break
 
     // F1 · daily order flow (Spec 8.2): a close through the last swing high/low. It counts as
@@ -167,7 +174,7 @@ biasDaily(int n) =>
     // 5-day range smaller than 1.2 × the average daily range.
     float loc  = h20 > l20 ? (close - l20) / (h20 - l20) : 0.5
     bool  cons = high <= high[1] and low >= low[1] and rng5 < 1.2 * adr
-    [f1[1], f2[1], f3[1], f4[1], loc[1], cons[1], high[1], high[2], low[1], low[2]]
+    [f1[1], f2[1], f3[1], f4[1], loc[1], cons[1], high[1], high[2], low[1], low[2], f3a[1], adr[1]]
 
 // F5 · weekly order flow (Spec 8.6): weekly structure (close through the last 3-candle weekly swing)
 // averaged with last week's candle against the week before.
@@ -189,7 +196,7 @@ biasWeekly() =>
     float v = (wdir + pv) / 2
     v[1]
 
-[bF1, bF2, bF3, bF4, bLoc, bCons, bH1, bH2, bL1, bL2] = request.security(syminfo.tickerid, "D", biasDaily(biasSwing), lookahead = barmerge.lookahead_on)
+[bF1, bF2, bF3, bF4, bLoc, bCons, bH1, bH2, bL1, bL2, bAnchor, bAdr] = request.security(syminfo.tickerid, "D", biasDaily(biasSwing), lookahead = barmerge.lookahead_on)
 float  bF5       = request.security(syminfo.tickerid, "W", biasWeekly(), lookahead = barmerge.lookahead_on)
 string smtTicker = smtSym == "" ? syminfo.tickerid : smtSym
 [oH1, oH2, oL1, oL2] = request.security(smtTicker, "D", [high[1], high[2], low[1], low[2]], lookahead = barmerge.lookahead_on)
@@ -221,39 +228,92 @@ string biasTxt  = score >= modTh ? "Bullish" : score <= -modTh ? "Bearish" : "Ne
 bool   strong   = math.abs(score) >= strongTh
 string scoreTxt = (score > 0 ? "+" : "") + str.tostring(score, "0.00")
 
+// Draw on liquidity and invalidation (Spec 8.9), fixed when the day opens; then watched on M15 closes.
+var float        dolPx       = na
+var string       dolName     = ""
+var float        invPx       = na
+var bool         biasInvalid = false
+var bool         dolHit      = false
+var int          dayStartT   = na
+var array<line>  dolLines    = array.new<line>()
+var array<label> dolLabels   = array.new<label>()
+if barstate.isconfirmed and newDay and tfSec < 86400
+    dayStartT   := time
+    dolPx       := na
+    dolName     := ""
+    invPx       := na
+    biasInvalid := false
+    dolHit      := false
+    if biasTxt != "Neutral"
+        bool  upB  = biasTxt == "Bullish"
+        float minD = 0.3 * nz(bAdr)
+        for p in pools
+            if p.state == 0 and p.isBuy == upB and (upB ? p.price >= close + minD : p.price <= close - minD)
+                if na(dolPx) or (upB ? p.price < dolPx : p.price > dolPx)
+                    dolPx   := p.price
+                    dolName := p.name
+        invPx := upB ? (bF3 > 0 and not na(bAnchor) ? bAnchor : bL1) : (bF3 < 0 and not na(bAnchor) ? bAnchor : bH1)
+        if showDol
+            color bc   = upB ? #2E7D32 : #C62828
+            int   tEnd = time + 86400000
+            if not na(dolPx)
+                dolLines.push(line.new(x1 = time, y1 = dolPx, x2 = tEnd, y2 = dolPx, xloc = xloc.bar_time, color = bc, style = line.style_dashed, width = 2))
+                dolLabels.push(label.new(x = tEnd, y = dolPx, text = "DOL · " + dolName, xloc = xloc.bar_time, yloc = yloc.price,
+                     color = color.new(bc, 100), style = label.style_label_left, textcolor = bc, size = size.small))
+            if not na(invPx)
+                dolLines.push(line.new(x1 = time, y1 = invPx, x2 = tEnd, y2 = invPx, xloc = xloc.bar_time, color = color.gray, style = line.style_dotted, width = 1))
+                dolLabels.push(label.new(x = tEnd, y = invPx, text = "Bias invalidation", xloc = xloc.bar_time, yloc = yloc.price,
+                     color = color.new(color.gray, 100), style = label.style_label_left, textcolor = color.gray, size = size.small))
+            while dolLines.size() > 20
+                line.delete(dolLines.shift())
+            while dolLabels.size() > 20
+                label.delete(dolLabels.shift())
+
+if barstate.isconfirmed and not na(invPx) and cC.size() > 0
+    bool upB = biasTxt == "Bullish"
+    for k = 0 to cC.size() - 1
+        if cT.get(k) >= dayStartT
+            if upB ? cC.get(k) < invPx : cC.get(k) > invPx
+                biasInvalid := true
+            if not na(dolPx) and (upB ? cH.get(k) >= dolPx : cL.get(k) <= dolPx)
+                dolHit := true
+
 voteTxt(float v) =>
     na(v) ? "–" : (v > 0 ? "+" : "") + str.tostring(v, "0.00")
 
 var table biasTbl = na
 if showBias and barstate.islast
     if na(biasTbl)
-        biasTbl := table.new(biasPos == "Top right" ? position.top_right : position.bottom_right, 2, 10,
+        biasTbl := table.new(biasPos == "Top right" ? position.top_right : position.bottom_right, 2, 11,
              frame_color = color.new(color.gray, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
-    color bg = biasTxt == "Bullish" ? (strong ? #1B5E20 : #43A047) : biasTxt == "Bearish" ? (strong ? #B71C1C : #E53935) : #757575
+    color bg = biasInvalid ? #757575 : biasTxt == "Bullish" ? (strong ? #1B5E20 : #43A047) : biasTxt == "Bearish" ? (strong ? #B71C1C : #E53935) : #757575
     string tip = "Score " + scoreTxt + (biasTxt == "Neutral" ? " (no-trade day)" : strong ? " (strong)" : " (moderate)") +
          "\nUses only daily and weekly candles closed before today opened."
     table.cell(biasTbl, 0, 0, "Bias", text_color = color.white, bgcolor = #424242, text_size = biasTxtSz)
-    table.cell(biasTbl, 1, 0, biasTxt, text_color = color.white, bgcolor = bg, text_size = biasTxtSz, tooltip = tip)
+    table.cell(biasTbl, 1, 0, biasTxt + (biasInvalid ? " · invalidated" : ""), text_color = color.white, bgcolor = bg, text_size = biasTxtSz, tooltip = tip)
+    if showDol and not na(dolPx)
+        table.cell(biasTbl, 0, 1, "DOL", text_color = color.white, bgcolor = #424242, text_size = biasTxtSz)
+        table.cell(biasTbl, 1, 1, dolName + "  " + fmtPx(dolPx) + (dolHit ? "  ✓ hit" : ""), text_color = color.white, bgcolor = #424242, text_size = biasTxtSz)
     if biasDetails
         color rowBg = color.new(#424242, 20)
-        table.cell(biasTbl, 0, 1, "Score",             text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 1, scoreTxt + (biasTxt == "Neutral" ? "" : strong ? " strong" : " moderate"), text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 2, "Daily order flow",  text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 2, voteTxt(bF1),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 3, "Previous day",      text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 3, voteTxt(bF2),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 4, "Liquidity cycle",   text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 4, voteTxt(bF3),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 5, "IPDA break",        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 5, voteTxt(bF4),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 6, "Weekly order flow", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 6, voteTxt(bF5),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 7, "SMT",               text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 7, smtOn ? voteTxt(bF6) : "off", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 8, "Location (20-day)", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 8, na(bLoc) ? "–" : (bLoc < 0.5 ? "Discount " : "Premium ") + str.tostring(bLoc * 100, "0") + "%", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 9, "Consolidation",     text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 9, bCons ? "Yes · capped" : "No", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 2, "Score",             text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 2, scoreTxt + (biasTxt == "Neutral" ? "" : strong ? " strong" : " moderate"), text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 3, "Daily order flow",  text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 3, voteTxt(bF1),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 4, "Previous day",      text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 4, voteTxt(bF2),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 5, "Liquidity cycle",   text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 5, voteTxt(bF3),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 6, "IPDA break",        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 6, voteTxt(bF4),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 7, "Weekly order flow", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 7, voteTxt(bF5),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 8, "SMT",               text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 8, smtOn ? voteTxt(bF6) : "off", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 9, "Location (20-day)", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 9, na(bLoc) ? "–" : (bLoc < 0.5 ? "Discount " : "Premium ") + str.tostring(bLoc * 100, "0") + "%", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 10, "Consolidation",     text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 10, bCons ? "Yes · capped" : "No", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
 
 if showBias and biasAlert and newDay and barstate.isconfirmed and tfSec < 86400
     alert("John · " + syminfo.ticker + " · Daily bias: " + biasTxt + " (" + scoreTxt + ")", alert.freq_once_per_bar_close)

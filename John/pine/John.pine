@@ -14,6 +14,9 @@
 //   Liquidity map    · BSL/SSL pools, equal highs/lows, raid vs run (Spec Part 3.1–3.3)
 //   Time map         · midnight separators, day names, killzone boxes (Spec Part 1.2–1.3, 5.1)
 //   Power of 3       · accumulation, manipulation (Judas swing) and distribution boxes (Spec Part 5.3)
+//   Daily bias       · six votes → Bullish / Bearish / Neutral, draw on liquidity, invalidation (Spec Part 8)
+//   PD arrays        · FVGs, order blocks, BOS/MSS on D, H4, H1, M15 (Spec Part 2.3–2.4, 4)
+//   Setups           · ICT 2022 model on M15: entry, stop-loss, TP1/TP2, paper results (Spec Part 9)
 
 //@version=6
 indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
@@ -45,7 +48,7 @@ string sizeH1     = input.string(size.small,  "Marker size  H1",  options = [siz
 string sizeM15    = input.string(size.tiny,   "M15",              options = [size.tiny, size.small, size.normal, size.large, size.huge], inline = "sz2", group = GRP_STRUCT)
 int    swingLen   = input.int(1, "Short-term swing length", minval = 1, maxval = 5, group = GRP_STRUCT,
      tooltip = "Candles required on each side of a short-term high/low on each structure timeframe. 1 = ICT's classic 3-candle swing.")
-int    maxMarkers = input.int(300, "Max markers kept on chart", minval = 50, maxval = 350, group = GRP_STRUCT,
+int    maxMarkers = input.int(220, "Max markers kept on chart", minval = 50, maxval = 300, group = GRP_STRUCT,
      tooltip = "Oldest markers are removed first. The rest of the 500-label budget is kept for liquidity labels.")
 
 bool   liqPD       = input.bool(true, "Previous day high/low (PDH / PDL)",  group = GRP_LIQ, tooltip = "Drawn on charts below the daily timeframe.")
@@ -218,6 +221,7 @@ type Po3State
 // ════════════════════════════════════════════════════════════════════════════════
 var array<Pool>       pools    = array.new<Pool>()       // untaken or pending pools, oldest first
 var array<Pool>       swept    = array.new<Pool>()       // raided or run pools still drawn, oldest first
+var array<Pool>       takenNow = array.new<Pool>()       // pools first traded through on this chart candle (for setups)
 var map<string, Mark> marks    = map.new<string, Mark>()
 var array<string>     markKeys = array.new<string>()     // marker keys, oldest first
 
@@ -471,8 +475,8 @@ string reqM15 = tfSec <= 900   ? "15"  : timeframe.period
 
 // M15 candles for raid/run decisions. Charts below M15 get the last closed M15 candle at the start of
 // each new one; charts above M15 get every M15 candle inside each of their own candles.
-[m15H, m15L, m15C, m15T] = request.security(syminfo.tickerid, reqM15, [high[1], low[1], close[1], time[1]], lookahead = barmerge.lookahead_on)
-[ltfH, ltfL, ltfC, ltfT] = request.security_lower_tf(syminfo.tickerid, "15", [high, low, close, time], ignore_invalid_timeframe = true)
+[m15O, m15H, m15L, m15C, m15T] = request.security(syminfo.tickerid, reqM15, [open[1], high[1], low[1], close[1], time[1]], lookahead = barmerge.lookahead_on)
+[ltfO, ltfH, ltfL, ltfC, ltfT] = request.security_lower_tf(syminfo.tickerid, "15", [open, high, low, close, time], ignore_invalid_timeframe = true)
 
 // Reference size for "deep" raids: the H1 ATR, so the judgement is the same on every chart.
 float atrRef = request.security(syminfo.tickerid, "60", ta.atr(14)[1], lookahead = barmerge.lookahead_on)
@@ -985,6 +989,47 @@ bool inCyc    = not na(time(timeframe.period, po3Cycle + ":1234567", NY_TZ))
 bool accStart = inAcc and not inAcc[1] and bar_index > 0
 bool cycStart = inCyc and not inCyc[1] and bar_index > 0
 
+// M15 candles available on this chart candle, oldest first. Raids/runs, bias invalidation, PD-array
+// mitigation and setups all read them, so every decision is the same on every chart timeframe:
+//   below M15 — the M15 candle that just closed (on the first chart candle of the next one);
+//   M15 — this candle; above M15 — every M15 candle inside this one.
+// TradingView only supplies M15 data for recent history; further back the chart's own candle stands in
+// (feedIsM15 = false) so pools still end where price took them. Setups only use real M15 candles.
+array<float> cO = array.new<float>()
+array<float> cH = array.new<float>()
+array<float> cL = array.new<float>()
+array<float> cC = array.new<float>()
+array<int>   cT = array.new<int>()
+bool   feedIsM15 = true
+string judgeNow  = "M15"
+if tfSec < 900
+    if newM15 and not na(m15C)
+        cO.push(m15O)
+        cH.push(m15H)
+        cL.push(m15L)
+        cC.push(m15C)
+        cT.push(m15T)
+else if tfSec == 900
+    cO.push(open)
+    cH.push(high)
+    cL.push(low)
+    cC.push(close)
+    cT.push(time)
+else if not na(ltfC) and ltfC.size() > 0
+    cO := ltfO
+    cH := ltfH
+    cL := ltfL
+    cC := ltfC
+    cT := ltfT
+else
+    cO.push(open)
+    cH.push(high)
+    cL.push(low)
+    cC.push(close)
+    cT.push(time)
+    feedIsM15 := false
+    judgeNow  := tfSec == 86400 ? "daily" : tfSec == 14400 ? "H4" : tfSec == 3600 ? "H1" : timeframe.period
+
 // ════════════════════════════════════════════════════════════════════════════════
 // ENGINE — runs once per closed chart candle, so nothing appears and then vanishes on a live bar
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1051,37 +1096,8 @@ if barstate.isconfirmed
     if showPo3 and tfSec <= 3600
         po3Step(po3, inAcc, accStart, inCyc, cycStart)
 
-    // 6 · Raid/run on M15 candles, the same decision on every chart timeframe:
-    //     below M15 — the M15 candle that just closed; M15 — this candle; above M15 — every M15 candle inside this one.
-    string       judgeNow = "M15"
-    array<float> cH = array.new<float>()
-    array<float> cL = array.new<float>()
-    array<float> cC = array.new<float>()
-    array<int>   cT = array.new<int>()
-    if tfSec < 900
-        if newM15 and not na(m15C)
-            cH.push(m15H)
-            cL.push(m15L)
-            cC.push(m15C)
-            cT.push(m15T)
-    else if tfSec == 900
-        cH.push(high)
-        cL.push(low)
-        cC.push(close)
-        cT.push(time)
-    else if not na(ltfC) and ltfC.size() > 0
-        cH := ltfH
-        cL := ltfL
-        cC := ltfC
-        cT := ltfT
-    else
-        // TradingView only supplies M15 data for recent history; further back, the chart's own candle
-        // judges the raid/run instead, so old pools still end where price actually took them.
-        cH.push(high)
-        cL.push(low)
-        cC.push(close)
-        cT.push(time)
-        judgeNow := tfSec == 86400 ? "daily" : tfSec == 14400 ? "H4" : tfSec == 3600 ? "H1" : timeframe.period
+    // 6 · Raid/run on the M15 candle feed (built in PER-BAR VALUES), the same decision on every chart.
+    takenNow.clear()
     float cMaxH = cH.size() > 0 ? cH.max() : na
     float cMinL = cL.size() > 0 ? cL.min() : na
     float thr   = sweepMin * pipSize
@@ -1097,7 +1113,10 @@ if barstate.isconfirmed
                     p.judge := judgeNow
                 for k = 0 to cH.size() - 1
                     if p.state <= 1 and cT.get(k) >= p.activeFrom
+                        int before = p.state
                         checkSweep(p, cH.get(k), cL.get(k), cC.get(k), cT.get(k))
+                        if before == 0 and p.state >= 1
+                            takenNow.push(p)
                 if p.state == 2 or p.state == 3
                     markSwept(p)
         if p.state <= 1
@@ -1208,6 +1227,8 @@ float  strongTh    = input.float(0.55, "Strong at |score| ≥",   minval = 0, ma
 float  modTh       = input.float(0.30, "Bullish/bearish at |score| ≥", minval = 0, maxval = 1, step = 0.05, group = GRP_BIAS,
      tooltip = "Below this the bias is Neutral: a no-trade day.")
 bool   biasAlert   = input.bool(true, "Alert with each new day's bias", group = GRP_BIAS)
+bool   showDol     = input.bool(true, "Draw on liquidity (DOL) and invalidation lines", group = GRP_BIAS,
+     tooltip = "Fixed when the day opens. DOL: the nearest untaken pool in the bias direction at least 0.3 × the average daily range away. Invalidation: the level the bias rests on (the raid extreme or FVG edge behind it), otherwise yesterday's low (bullish) or high (bearish). An M15 close beyond it invalidates the bias for the rest of the day.")
 
 // Spec 8.3 — this candle against the one before it:
 //   close above its high +1 · close below its low −1 · outside candle closing inside ±0.5 by which half
@@ -1260,22 +1281,27 @@ biasDaily(int n) =>
     // Raid of external liquidity (last swing high/low or the 20-day extreme, closed back inside) points
     // to internal liquidity on the other side; holding a daily FVG above its midpoint points to ERL.
     float f3    = 0.0
+    float f3a   = na                                 // F3's anchor: the raid extreme or the FVG edge it held
     bool  raidH = (not na(sh) and high > sh and close < sh) or (not na(h20p) and high > h20p and close < h20p)
     bool  raidL = (not na(sl) and low < sl and close > sl) or (not na(l20p) and low < l20p and close > l20p)
     if raidH and not raidL
-        f3 := -1.0
+        f3  := -1.0
+        f3a := high
     else if raidL and not raidH
-        f3 := 1.0
+        f3  := 1.0
+        f3a := low
     else if not raidH and not raidL
         if bTop.size() > 0
             for i = bTop.size() - 1 to 0
                 if low <= bTop.get(i) and high >= bBot.get(i)
-                    f3 := close < bBot.get(i) ? -0.5 : close > (bTop.get(i) + bBot.get(i)) / 2 ? 1.0 : 0.0
+                    f3  := close < bBot.get(i) ? -0.5 : close > (bTop.get(i) + bBot.get(i)) / 2 ? 1.0 : 0.0
+                    f3a := f3 == 1.0 ? bBot.get(i) : na
                     break
         if f3 == 0.0 and sTop.size() > 0
             for i = sTop.size() - 1 to 0
                 if high >= sBot.get(i) and low <= sTop.get(i)
-                    f3 := close > sTop.get(i) ? 0.5 : close < (sTop.get(i) + sBot.get(i)) / 2 ? -1.0 : 0.0
+                    f3  := close > sTop.get(i) ? 0.5 : close < (sTop.get(i) + sBot.get(i)) / 2 ? -1.0 : 0.0
+                    f3a := f3 == -1.0 ? sTop.get(i) : na
                     break
 
     // F1 · daily order flow (Spec 8.2): a close through the last swing high/low. It counts as
@@ -1349,7 +1375,7 @@ biasDaily(int n) =>
     // 5-day range smaller than 1.2 × the average daily range.
     float loc  = h20 > l20 ? (close - l20) / (h20 - l20) : 0.5
     bool  cons = high <= high[1] and low >= low[1] and rng5 < 1.2 * adr
-    [f1[1], f2[1], f3[1], f4[1], loc[1], cons[1], high[1], high[2], low[1], low[2]]
+    [f1[1], f2[1], f3[1], f4[1], loc[1], cons[1], high[1], high[2], low[1], low[2], f3a[1], adr[1]]
 
 // F5 · weekly order flow (Spec 8.6): weekly structure (close through the last 3-candle weekly swing)
 // averaged with last week's candle against the week before.
@@ -1371,7 +1397,7 @@ biasWeekly() =>
     float v = (wdir + pv) / 2
     v[1]
 
-[bF1, bF2, bF3, bF4, bLoc, bCons, bH1, bH2, bL1, bL2] = request.security(syminfo.tickerid, "D", biasDaily(biasSwing), lookahead = barmerge.lookahead_on)
+[bF1, bF2, bF3, bF4, bLoc, bCons, bH1, bH2, bL1, bL2, bAnchor, bAdr] = request.security(syminfo.tickerid, "D", biasDaily(biasSwing), lookahead = barmerge.lookahead_on)
 float  bF5       = request.security(syminfo.tickerid, "W", biasWeekly(), lookahead = barmerge.lookahead_on)
 string smtTicker = smtSym == "" ? syminfo.tickerid : smtSym
 [oH1, oH2, oL1, oL2] = request.security(smtTicker, "D", [high[1], high[2], low[1], low[2]], lookahead = barmerge.lookahead_on)
@@ -1403,44 +1429,773 @@ string biasTxt  = score >= modTh ? "Bullish" : score <= -modTh ? "Bearish" : "Ne
 bool   strong   = math.abs(score) >= strongTh
 string scoreTxt = (score > 0 ? "+" : "") + str.tostring(score, "0.00")
 
+// Draw on liquidity and invalidation (Spec 8.9), fixed when the day opens; then watched on M15 closes.
+var float        dolPx       = na
+var string       dolName     = ""
+var float        invPx       = na
+var bool         biasInvalid = false
+var bool         dolHit      = false
+var int          dayStartT   = na
+var array<line>  dolLines    = array.new<line>()
+var array<label> dolLabels   = array.new<label>()
+if barstate.isconfirmed and newDay and tfSec < 86400
+    dayStartT   := time
+    dolPx       := na
+    dolName     := ""
+    invPx       := na
+    biasInvalid := false
+    dolHit      := false
+    if biasTxt != "Neutral"
+        bool  upB  = biasTxt == "Bullish"
+        float minD = 0.3 * nz(bAdr)
+        for p in pools
+            if p.state == 0 and p.isBuy == upB and (upB ? p.price >= close + minD : p.price <= close - minD)
+                if na(dolPx) or (upB ? p.price < dolPx : p.price > dolPx)
+                    dolPx   := p.price
+                    dolName := p.name
+        invPx := upB ? (bF3 > 0 and not na(bAnchor) ? bAnchor : bL1) : (bF3 < 0 and not na(bAnchor) ? bAnchor : bH1)
+        if showDol
+            color bc   = upB ? #2E7D32 : #C62828
+            int   tEnd = time + 86400000
+            if not na(dolPx)
+                dolLines.push(line.new(x1 = time, y1 = dolPx, x2 = tEnd, y2 = dolPx, xloc = xloc.bar_time, color = bc, style = line.style_dashed, width = 2))
+                dolLabels.push(label.new(x = tEnd, y = dolPx, text = "DOL · " + dolName, xloc = xloc.bar_time, yloc = yloc.price,
+                     color = color.new(bc, 100), style = label.style_label_left, textcolor = bc, size = size.small))
+            if not na(invPx)
+                dolLines.push(line.new(x1 = time, y1 = invPx, x2 = tEnd, y2 = invPx, xloc = xloc.bar_time, color = color.gray, style = line.style_dotted, width = 1))
+                dolLabels.push(label.new(x = tEnd, y = invPx, text = "Bias invalidation", xloc = xloc.bar_time, yloc = yloc.price,
+                     color = color.new(color.gray, 100), style = label.style_label_left, textcolor = color.gray, size = size.small))
+            while dolLines.size() > 20
+                line.delete(dolLines.shift())
+            while dolLabels.size() > 20
+                label.delete(dolLabels.shift())
+
+if barstate.isconfirmed and not na(invPx) and cC.size() > 0
+    bool upB = biasTxt == "Bullish"
+    for k = 0 to cC.size() - 1
+        if cT.get(k) >= dayStartT
+            if upB ? cC.get(k) < invPx : cC.get(k) > invPx
+                biasInvalid := true
+            if not na(dolPx) and (upB ? cH.get(k) >= dolPx : cL.get(k) <= dolPx)
+                dolHit := true
+
 voteTxt(float v) =>
     na(v) ? "–" : (v > 0 ? "+" : "") + str.tostring(v, "0.00")
 
 var table biasTbl = na
 if showBias and barstate.islast
     if na(biasTbl)
-        biasTbl := table.new(biasPos == "Top right" ? position.top_right : position.bottom_right, 2, 10,
+        biasTbl := table.new(biasPos == "Top right" ? position.top_right : position.bottom_right, 2, 11,
              frame_color = color.new(color.gray, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
-    color bg = biasTxt == "Bullish" ? (strong ? #1B5E20 : #43A047) : biasTxt == "Bearish" ? (strong ? #B71C1C : #E53935) : #757575
+    color bg = biasInvalid ? #757575 : biasTxt == "Bullish" ? (strong ? #1B5E20 : #43A047) : biasTxt == "Bearish" ? (strong ? #B71C1C : #E53935) : #757575
     string tip = "Score " + scoreTxt + (biasTxt == "Neutral" ? " (no-trade day)" : strong ? " (strong)" : " (moderate)") +
          "\nUses only daily and weekly candles closed before today opened."
     table.cell(biasTbl, 0, 0, "Bias", text_color = color.white, bgcolor = #424242, text_size = biasTxtSz)
-    table.cell(biasTbl, 1, 0, biasTxt, text_color = color.white, bgcolor = bg, text_size = biasTxtSz, tooltip = tip)
+    table.cell(biasTbl, 1, 0, biasTxt + (biasInvalid ? " · invalidated" : ""), text_color = color.white, bgcolor = bg, text_size = biasTxtSz, tooltip = tip)
+    if showDol and not na(dolPx)
+        table.cell(biasTbl, 0, 1, "DOL", text_color = color.white, bgcolor = #424242, text_size = biasTxtSz)
+        table.cell(biasTbl, 1, 1, dolName + "  " + fmtPx(dolPx) + (dolHit ? "  ✓ hit" : ""), text_color = color.white, bgcolor = #424242, text_size = biasTxtSz)
     if biasDetails
         color rowBg = color.new(#424242, 20)
-        table.cell(biasTbl, 0, 1, "Score",             text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 1, scoreTxt + (biasTxt == "Neutral" ? "" : strong ? " strong" : " moderate"), text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 2, "Daily order flow",  text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 2, voteTxt(bF1),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 3, "Previous day",      text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 3, voteTxt(bF2),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 4, "Liquidity cycle",   text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 4, voteTxt(bF3),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 5, "IPDA break",        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 5, voteTxt(bF4),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 6, "Weekly order flow", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 6, voteTxt(bF5),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 7, "SMT",               text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 7, smtOn ? voteTxt(bF6) : "off", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 8, "Location (20-day)", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 8, na(bLoc) ? "–" : (bLoc < 0.5 ? "Discount " : "Premium ") + str.tostring(bLoc * 100, "0") + "%", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
-        table.cell(biasTbl, 0, 9, "Consolidation",     text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
-        table.cell(biasTbl, 1, 9, bCons ? "Yes · capped" : "No", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 2, "Score",             text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 2, scoreTxt + (biasTxt == "Neutral" ? "" : strong ? " strong" : " moderate"), text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 3, "Daily order flow",  text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 3, voteTxt(bF1),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 4, "Previous day",      text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 4, voteTxt(bF2),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 5, "Liquidity cycle",   text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 5, voteTxt(bF3),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 6, "IPDA break",        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 6, voteTxt(bF4),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 7, "Weekly order flow", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 7, voteTxt(bF5),        text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 8, "SMT",               text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 8, smtOn ? voteTxt(bF6) : "off", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 9, "Location (20-day)", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 9, na(bLoc) ? "–" : (bLoc < 0.5 ? "Discount " : "Premium ") + str.tostring(bLoc * 100, "0") + "%", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
+        table.cell(biasTbl, 0, 10, "Consolidation",     text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz, text_halign = text.align_left)
+        table.cell(biasTbl, 1, 10, bCons ? "Yes · capped" : "No", text_color = color.white, bgcolor = rowBg, text_size = biasTxtSz)
 
 if showBias and biasAlert and newDay and barstate.isconfirmed and tfSec < 86400
     alert("John · " + syminfo.ticker + " · Daily bias: " + biasTxt + " (" + scoreTxt + ")", alert.freq_once_per_bar_close)
 
 plot(score, "Daily bias score", color = color.gray, display = display.data_window)
+// ════════════════════════════════════════════════════════════════════════════════
+// PD ARRAYS AND STRUCTURE BREAKS (Spec Part 2.3–2.4, 4.1, 4.5)
+// ════════════════════════════════════════════════════════════════════════════════
+// FVGs, order blocks and BOS/MSS from D, H4, H1 and M15 candles (top-down: a chart shows its own
+// timeframe and every higher one). Each zone stays live until an M15 candle closes through its far
+// edge, the same on every chart.
+const string GRP_PD = "PD arrays and structure breaks (Spec Part 2, 4)"
+
+bool  fvgD    = input.bool(false, "FVGs from  D",   inline = "pdf", group = GRP_PD)
+bool  fvgH4   = input.bool(true,  "H4",             inline = "pdf", group = GRP_PD)
+bool  fvgH1   = input.bool(true,  "H1",             inline = "pdf", group = GRP_PD)
+bool  fvgM15  = input.bool(false, "M15",            inline = "pdf", group = GRP_PD,
+     tooltip = "Spec 4.1: candle 3's low above candle 1's high (bullish) or candle 3's high below candle 1's low (bearish), at least 0.1 × that timeframe's ATR.")
+bool  obD     = input.bool(false, "Order blocks from  D", inline = "pdo", group = GRP_PD)
+bool  obH4    = input.bool(true,  "H4",                   inline = "pdo", group = GRP_PD)
+bool  obH1    = input.bool(true,  "H1",                   inline = "pdo", group = GRP_PD)
+bool  obM15   = input.bool(false, "M15",                  inline = "pdo", group = GRP_PD,
+     tooltip = "Spec 4.5: the last opposite-colour candle before a displacement that closes through a swing.")
+bool  brD     = input.bool(false, "BOS / MSS from  D", inline = "pdb", group = GRP_PD)
+bool  brH4    = input.bool(true,  "H4",                inline = "pdb", group = GRP_PD)
+bool  brH1    = input.bool(true,  "H1",                inline = "pdb", group = GRP_PD)
+bool  brM15   = input.bool(true,  "M15",               inline = "pdb", group = GRP_PD,
+     tooltip = "Spec 2.4: a close through the last swing high/low with displacement. MSS when it turns the direction of the previous break, BOS when it continues it.")
+float pdDisp  = input.float(1.0, "Displacement: bodies ≥ × that timeframe's ATR", minval = 0.3, step = 0.1, group = GRP_PD)
+color colFvgU = input.color(#26A69A, "FVG bullish", inline = "pdc1", group = GRP_PD)
+color colFvgD = input.color(#EF5350, "bearish",     inline = "pdc1", group = GRP_PD)
+color colObU  = input.color(#42A5F5, "OB bullish",  inline = "pdc2", group = GRP_PD)
+color colObD  = input.color(#FFA726, "bearish",     inline = "pdc2", group = GRP_PD)
+int   pdFill  = input.int(85, "Zone fill transparency (%)", minval = 0, maxval = 100, group = GRP_PD)
+bool  pdCE    = input.bool(true, "Midpoint line (FVG consequent encroachment, OB mean threshold)", group = GRP_PD)
+int   pdKeep  = input.int(3, "Live zones kept per kind, side and timeframe", minval = 1, maxval = 10, group = GRP_PD)
+int   pdDone  = input.int(10, "Closed-through zones kept", minval = 0, maxval = 40, group = GRP_PD)
+
+// One FVG or order block. state: 0 fresh · 1 tapped · 2 midpoint reached · 3 closed through.
+type Zone
+    float  top
+    float  bot
+    bool   bull
+    int    rank
+    string kind
+    int    activeFrom
+    int    state = 0
+    box    bx
+    line   mid
+
+var array<Zone>  zones    = array.new<Zone>()      // live zones, oldest first
+var array<Zone>  zonesOff = array.new<Zone>()      // closed-through zones still drawn
+var array<line>  brLines  = array.new<line>()
+var array<label> brLabels = array.new<label>()
+
+// Runs on one structure timeframe's candles (through request.security). Reports, for the candle that
+// just closed: a new bullish/bearish FVG, a close through the last swing high/low with displacement
+// (level, swing time, direction, MSS or BOS) and the order block behind that displacement.
+pdEngine(int n, float dispK) =>
+    var float sh      = na
+    var int   shT     = na
+    var float sl      = na
+    var int   slT     = na
+    var int   lastDir = 0
+    float a     = ta.atr(14)
+    bool  newSH = isSwingHigh(n)
+    bool  newSL = isSwingLow(n)
+    float bfTop = na
+    float bfBot = na
+    int   bfT   = na
+    float sfTop = na
+    float sfBot = na
+    int   sfT   = na
+    if low > high[2] and low - high[2] >= 0.1 * a
+        bfTop := low
+        bfBot := high[2]
+        bfT   := time[2]
+    if high < low[2] and low[2] - high >= 0.1 * a
+        sfTop := low[2]
+        sfBot := high
+        sfT   := time[2]
+    if newSH
+        sh  := high[n]
+        shT := time[n]
+    if newSL
+        sl  := low[n]
+        slT := time[n]
+    bool  up      = close > open
+    float runBody = 0.0
+    bool  clean   = true
+    for i = 0 to 2
+        if up ? close[i] > open[i] : close[i] < open[i]
+            runBody += math.abs(close[i] - open[i])
+            if math.abs(close[i] - open[i]) < 0.6 * (high[i] - low[i])
+                clean := false
+        else
+            break
+    bool  disp  = clean and runBody >= dispK * a
+    float brLvl = na
+    int   brT0  = na
+    int   brDir = 0
+    bool  brMss = false
+    float obTop = na
+    float obBot = na
+    int   obT   = na
+    if not na(sh) and close > sh
+        if disp and up
+            brLvl := sh
+            brT0  := shT
+            brDir := 1
+            brMss := lastDir == -1
+            for i = 1 to 10
+                if close[i] < open[i]
+                    obTop := high[i]
+                    obBot := low[i]
+                    obT   := time[i]
+                    break
+        lastDir := 1
+        sh      := na
+    else if not na(sl) and close < sl
+        if disp and not up
+            brLvl := sl
+            brT0  := slT
+            brDir := -1
+            brMss := lastDir == 1
+            for i = 1 to 10
+                if close[i] > open[i]
+                    obTop := high[i]
+                    obBot := low[i]
+                    obT   := time[i]
+                    break
+        lastDir := -1
+        sl      := na
+    [bfTop[1], bfBot[1], bfT[1], sfTop[1], sfBot[1], sfT[1], brLvl[1], brT0[1], brDir[1], brMss[1], obTop[1], obBot[1], obT[1]]
+
+[dBfTop, dBfBot, dBfT, dSfTop, dSfBot, dSfT, dBrLvl, dBrT0, dBrDir, dBrMss, dObTop, dObBot, dObT] = request.security(syminfo.tickerid, reqD,   pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+[fBfTop, fBfBot, fBfT, fSfTop, fSfBot, fSfT, fBrLvl, fBrT0, fBrDir, fBrMss, fObTop, fObBot, fObT] = request.security(syminfo.tickerid, reqH4,  pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+[hBfTop, hBfBot, hBfT, hSfTop, hSfBot, hSfT, hBrLvl, hBrT0, hBrDir, hBrMss, hObTop, hObBot, hObT] = request.security(syminfo.tickerid, reqH1,  pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+[qBfTop, qBfBot, qBfT, qSfTop, qSfBot, qSfT, qBrLvl, qBrT0, qBrDir, qBrMss, qObTop, qObBot, qObT] = request.security(syminfo.tickerid, reqM15, pdEngine(swingLen, pdDisp), lookahead = barmerge.lookahead_on)
+
+pdOn(string kind, int r) =>
+    kind == "FVG" ? (r == 4 ? fvgD : r == 3 ? fvgH4 : r == 2 ? fvgH1 : fvgM15) : kind == "OB" ? (r == 4 ? obD : r == 3 ? obH4 : r == 2 ? obH1 : obM15) : (r == 4 ? brD : r == 3 ? brH4 : r == 2 ? brH1 : brM15)
+
+zoneColor(Zone z) =>
+    z.kind == "FVG" ? (z.bull ? colFvgU : colFvgD) : (z.bull ? colObU : colObD)
+
+// Closes a zone at time `t`: it stops there and fades (kept = false deletes it instead).
+retireZone(Zone z, int t, bool kept) =>
+    z.state := 3
+    if kept and pdDone > 0
+        color c = zoneColor(z)
+        box.set_right(z.bx, t)
+        box.set_bgcolor(z.bx, color.new(c, math.min(97, pdFill + 8)))
+        box.set_border_color(z.bx, color.new(c, 85))
+        if not na(z.mid)
+            line.set_x2(z.mid, t)
+        zonesOff.push(z)
+        if zonesOff.size() > pdDone
+            Zone old = zonesOff.shift()
+            box.delete(old.bx)
+            if not na(old.mid)
+                line.delete(old.mid)
+    else
+        box.delete(z.bx)
+        if not na(z.mid)
+            line.delete(z.mid)
+    z
+
+addZone(int r, string kind, bool bull, float top, float bot, int t0) =>
+    Zone  z = Zone.new(top, bot, bull, r, kind, time)
+    color c = zoneColor(z)
+    z.bx := box.new(left = t0, top = top, right = time, bottom = bot, xloc = xloc.bar_time,
+         border_color = color.new(c, 60), bgcolor = color.new(c, pdFill), text = tfName(r) + " " + kind,
+         text_size = size.tiny, text_color = color.new(c, 10), text_halign = text.align_right, text_valign = text.align_center)
+    if pdCE
+        z.mid := line.new(x1 = t0, y1 = (top + bot) / 2, x2 = time, y2 = (top + bot) / 2, xloc = xloc.bar_time,
+             color = color.new(c, 40), style = line.style_dashed, width = 1)
+    zones.push(z)
+    int n = 0
+    for i = zones.size() - 1 to 0
+        Zone q = zones.get(i)
+        if q.state < 3 and q.kind == kind and q.bull == bull and q.rank == r
+            n += 1
+            if n > pdKeep
+                retireZone(q, time, false)
+    z
+
+drawBreak(int r, float lvl, int t0, int dir, bool mss) =>
+    color c = dir == 1 ? colFvgU : colFvgD
+    brLines.push(line.new(x1 = t0, y1 = lvl, x2 = time, y2 = lvl, xloc = xloc.bar_time, color = c, style = line.style_solid, width = 1))
+    brLabels.push(label.new(x = time, y = lvl, text = tfName(r) + (mss ? " MSS" : " BOS"), xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(c, 100), style = dir == 1 ? label.style_label_down : label.style_label_up, textcolor = c, size = size.tiny))
+    if brLines.size() > 20
+        line.delete(brLines.shift())
+        label.delete(brLabels.shift())
+    r
+
+// Takes in what one timeframe's last closed candle produced (once, on the first chart candle of its next candle).
+processPd(int r, bool isNew, TfTrack k, float bfTop, float bfBot, int bfT, float sfTop, float sfBot, int sfT, float brLvl, int brT0, int brDir, bool brMss, float obTop, float obBot, int obT) =>
+    if isNew
+        if not na(bfTop) and pdOn("FVG", r)
+            addZone(r, "FVG", true, bfTop, bfBot, bfT)
+        if not na(sfTop) and pdOn("FVG", r)
+            addZone(r, "FVG", false, sfTop, sfBot, sfT)
+        if not na(obTop) and pdOn("OB", r)
+            addZone(r, "OB", brDir == 1, obTop, obBot, obT)
+        if brDir != 0 and not na(brLvl) and pdOn("BR", r)
+            drawBreak(r, brLvl, exactTime(k, brT0, brDir == 1), brDir, brMss)
+    r
+
+if barstate.isconfirmed
+    if tfSec <= 86400
+        processPd(4, newDay, trD, dBfTop, dBfBot, dBfT, dSfTop, dSfBot, dSfT, dBrLvl, dBrT0, dBrDir, dBrMss, dObTop, dObBot, dObT)
+    if tfSec <= 14400
+        processPd(3, newH4, trH4, fBfTop, fBfBot, fBfT, fSfTop, fSfBot, fSfT, fBrLvl, fBrT0, fBrDir, fBrMss, fObTop, fObBot, fObT)
+    if tfSec <= 3600
+        processPd(2, newH1, trH1, hBfTop, hBfBot, hBfT, hSfTop, hSfBot, hSfT, hBrLvl, hBrT0, hBrDir, hBrMss, hObTop, hObBot, hObT)
+    if tfSec <= 900
+        processPd(1, newM15, trM15, qBfTop, qBfBot, qBfT, qSfTop, qSfBot, qSfT, qBrLvl, qBrT0, qBrDir, qBrMss, qObTop, qObBot, qObT)
+
+    // Lifecycle on the M15 feed: tapped → midpoint → closed through the far edge (then it stops and fades).
+    if zones.size() > 0 and cC.size() > 0
+        array<Zone> liveZ = array.new<Zone>()
+        for z in zones
+            if z.state < 3
+                int endT = na
+                for k = 0 to cC.size() - 1
+                    if z.state < 3 and cT.get(k) >= z.activeFrom
+                        float m = (z.top + z.bot) / 2
+                        if z.bull
+                            if cL.get(k) <= z.top
+                                z.state := math.max(z.state, 1)
+                            if cL.get(k) <= m
+                                z.state := math.max(z.state, 2)
+                            if cC.get(k) < z.bot
+                                z.state := 3
+                                endT    := cT.get(k)
+                        else
+                            if cH.get(k) >= z.bot
+                                z.state := math.max(z.state, 1)
+                            if cH.get(k) >= m
+                                z.state := math.max(z.state, 2)
+                            if cC.get(k) > z.top
+                                z.state := 3
+                                endT    := cT.get(k)
+                if z.state == 3
+                    retireZone(z, endT, true)
+                else
+                    liveZ.push(z)
+        zones := liveZ
+
+if barstate.islast and zones.size() > 0
+    int xr = time + lblOffset * tfSec * 1000
+    for z in zones
+        box.set_right(z.bx, xr)
+        if not na(z.mid)
+            line.set_x2(z.mid, xr)
+        if z.state == 2
+            box.set_text(z.bx, tfName(z.rank) + " " + z.kind + " · " + (z.kind == "FVG" ? "CE hit" : "MT hit"))
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SETUPS · ICT 2022 MODEL WITH ENTRY, STOP AND TARGETS (Spec Part 9)
+// ════════════════════════════════════════════════════════════════════════════════
+// Runs on M15 candles (the same signals on every chart): inside a killzone and with the daily bias,
+//   1 · a sellside pool is traded through (longs; buyside for shorts) — the raid;
+//   2 · within a few M15 candles, a close through the swing high that started the drop into the raid,
+//       with displacement — the market structure shift;
+//   3 · the first FVG of that displacement leg gives the entry (edge, midpoint or OTE 70.5%);
+//   4 · stop beyond the raid, TP1 at the displacement high, TP2 at the day's draw on liquidity
+//       (or the next untaken pool), only if reward:risk to TP2 meets the minimum.
+// The order waits for a fill until the killzone ends; each trade is then tracked to TP2, the stop,
+// or the flat time, with a partial at TP1. Results feed the stats table (paper results, not advice).
+const string GRP_SET = "Setups · 2022 model (Spec Part 9)"
+
+bool   showSetups = input.bool(true, "Show setups (entry, stop-loss, targets)", group = GRP_SET,
+     tooltip = "Signals come from M15 candles on every chart. Shown on charts of H4 or lower.")
+bool   setLdn     = input.bool(true, "Trade in  London KZ", inline = "skz", group = GRP_SET)
+bool   setAM      = input.bool(true, "NY AM",               inline = "skz", group = GRP_SET)
+bool   setPM      = input.bool(true, "NY PM",               inline = "skz", group = GRP_SET)
+string biasGate   = input.string("Bullish/Bearish only", "Daily bias filter", options = ["Bullish/Bearish only", "Strong only", "Off"], group = GRP_SET,
+     tooltip = "Longs only on bullish days and shorts only on bearish days (not invalidated). Off trades both ways.")
+string entryMode  = input.string("FVG edge", "Entry", options = ["FVG edge", "FVG midpoint (CE)", "OTE 70.5%"], group = GRP_SET)
+float  setDisp    = input.float(1.2, "Displacement: bodies ≥ × M15 ATR", minval = 0.3, step = 0.1, group = GRP_SET)
+int    maxToMss   = input.int(10, "M15 candles allowed from raid to MSS", minval = 2, maxval = 40, group = GRP_SET)
+float  slBuffer   = input.float(1.0, "Stop buffer beyond the raid (pips; ticks off forex)", minval = 0, step = 0.5, group = GRP_SET)
+float  minRR      = input.float(2.0, "Minimum reward:risk to TP2", minval = 0.5, step = 0.25, group = GRP_SET)
+float  partialPct = input.float(50, "Close at TP1 (%)", minval = 0, maxval = 100, step = 5, group = GRP_SET)
+bool   moveBE     = input.bool(true, "Move the stop to entry once TP1 is hit", group = GRP_SET)
+int    flatHour   = input.int(16, "Close any open trade at (New York hour)", minval = 0, maxval = 23, group = GRP_SET)
+int    maxPerKz   = input.int(1, "Setups per killzone", minval = 1, maxval = 5, group = GRP_SET)
+int    keepSetups = input.int(30, "Setups kept on chart", minval = 1, maxval = 60, group = GRP_SET)
+bool   showMissed = input.bool(false, "Also show setups that never filled", group = GRP_SET)
+color  colGain    = input.color(#26A69A, "Target zone", inline = "scol", group = GRP_SET)
+color  colRisk    = input.color(#EF5350, "Risk zone",   inline = "scol", group = GRP_SET)
+bool   showStats  = input.bool(true, "Stats table (paper results on the loaded history)", group = GRP_SET)
+string statsPos   = input.string("Bottom right", "Stats table position", options = ["Bottom right", "Bottom left", "Top left"], group = GRP_SET)
+bool   setAlerts  = input.bool(true, "Alerts: new setup, fill, exit", group = GRP_SET)
+
+// One trade idea. state: 0 armed (raid seen, waiting for MSS) · 1 order waiting · 2 in the trade ·
+// 3 closed · 4 cancelled.
+type Setup
+    bool   isLong
+    string model
+    string kz
+    string kzKey
+    int    state  = 0
+    float  raidPx
+    int    raidIdx
+    float  legPx
+    float  extPx
+    float  entry
+    float  sl
+    float  stop
+    float  tp1
+    float  tp2
+    string tp2Name
+    float  rr
+    float  fvgTop
+    float  fvgBot
+    int    sigT
+    int    fillT
+    int    endT
+    bool   tp1Hit = false
+    float  r
+    box    bxGain
+    box    bxRisk
+    line   lnTp1
+    label  lbSig
+    label  lbEnd
+
+var array<Setup>   setups    = array.new<Setup>()
+var map<string, int> kzSigs  = map.new<string, int>()   // signals per killzone (date + killzone)
+var array<float>   mO        = array.new<float>()       // recent M15 candles, oldest first
+var array<float>   mH        = array.new<float>()
+var array<float>   mL        = array.new<float>()
+var array<float>   mC        = array.new<float>()
+var array<int>     mT        = array.new<int>()
+var int            mCount    = 0                         // M15 candles taken in so far
+var array<float>   stats     = array.from(0.0, 0.0, 0.0, 0.0, 0.0)   // setups, filled, wins, closed, total R
+const int          MBUF      = 300
+const int          M15MS     = 900000
+
+// ── Helpers on the M15 buffer ─────────────────────────────────────────────────────
+bump(int i, float v) =>
+    stats.set(i, stats.get(i) + v)
+
+bufPos(int absIdx) =>
+    absIdx - (mCount - mH.size())
+
+// Average true range of the last 14 M15 candles.
+m15Atr() =>
+    int   n   = mH.size()
+    float s   = 0.0
+    int   cnt = 0
+    if n >= 2
+        for i = math.max(1, n - 14) to n - 1
+            s   += math.max(mH.get(i) - mL.get(i), math.max(math.abs(mH.get(i) - mC.get(i - 1)), math.abs(mL.get(i) - mC.get(i - 1))))
+            cnt += 1
+    cnt > 0 ? s / cnt : na
+
+// The swing the MSS must close through: for a long, the most recent 3-candle swing high before the
+// raid candle (the high that began the drop into the raid); for a short, the swing low.
+legSwing(int raidPos, bool isLong) =>
+    float lvl = na
+    if raidPos >= 2
+        for j = raidPos - 1 to math.max(1, raidPos - 30)
+            bool sw = isLong ? mH.get(j) > mH.get(j - 1) and mH.get(j) >= mH.get(j + 1) : mL.get(j) < mL.get(j - 1) and mL.get(j) <= mL.get(j + 1)
+            if sw
+                lvl := isLong ? mH.get(j) : mL.get(j)
+                break
+    lvl
+
+// Displacement at buffer position `pos`: the run of up to 3 candles of the trade's colour ending
+// there has bodies totalling at least `setDisp` × M15 ATR, every body at least 60% of its candle.
+dispAt(int pos, bool isLong, float atr) =>
+    float run   = 0.0
+    bool  clean = true
+    int   cnt   = 0
+    for i = 0 to 2
+        int j = pos - i
+        if j < 0
+            break
+        bool same = isLong ? mC.get(j) > mO.get(j) : mC.get(j) < mO.get(j)
+        if not same
+            break
+        float body = math.abs(mC.get(j) - mO.get(j))
+        run += body
+        cnt += 1
+        if body < 0.6 * (mH.get(j) - mL.get(j))
+            clean := false
+    cnt > 0 and clean and not na(atr) and run >= setDisp * atr
+
+// The first FVG of the displacement leg after the raid (Spec 4.1), beyond the raid extreme: [top, bottom].
+legFvg(int raidPos, int pos, bool isLong, float raidPx) =>
+    float top = na
+    float bot = na
+    if pos - raidPos >= 2
+        for j = raidPos + 2 to pos
+            if isLong and mL.get(j) > mH.get(j - 2) and mH.get(j - 2) > raidPx
+                top := mL.get(j)
+                bot := mH.get(j - 2)
+                break
+            if not isLong and mH.get(j) < mL.get(j - 2) and mL.get(j - 2) < raidPx
+                top := mL.get(j - 2)
+                bot := mH.get(j)
+                break
+    [top, bot]
+
+nyMins(int t) =>
+    hour(t, NY_TZ) * 60 + minute(t, NY_TZ)
+
+inSessT(int t, string sess) =>
+    int sm = math.round(str.tonumber(str.substring(sess, 0, 2))) * 60 + math.round(str.tonumber(str.substring(sess, 2, 4)))
+    int em = math.round(str.tonumber(str.substring(sess, 5, 7))) * 60 + math.round(str.tonumber(str.substring(sess, 7, 9)))
+    int m  = nyMins(t)
+    em > sm ? m >= sm and m < em : m >= sm or m < em
+
+// Which enabled killzone an M15 candle opens in ("" when none).
+kzOf(int t) =>
+    setLdn and inSessT(t, sessLdn) ? "London KZ" : setAM and inSessT(t, sessAM) ? "NY AM" : setPM and inSessT(t, sessPM) ? "NY PM" : ""
+
+biasAllows(bool isLong) =>
+    biasGate == "Off" ? true : (isLong ? biasTxt == "Bullish" : biasTxt == "Bearish") and not biasInvalid and (biasGate != "Strong only" or strong)
+
+// TP2: the day's draw on liquidity when it lies beyond TP1, otherwise the nearest untaken pool beyond
+// TP1, otherwise `minRR` × risk. Returns [price, name].
+pickTarget(bool isLong, float beyond, float entry, float risk) =>
+    float best = na
+    string nm  = ""
+    if not na(dolPx) and (isLong ? dolPx > beyond : dolPx < beyond)
+        best := dolPx
+        nm   := "DOL " + dolName
+    else
+        for p in pools
+            if p.state == 0 and p.isBuy == isLong and (isLong ? p.price > beyond : p.price < beyond)
+                if na(best) or (isLong ? p.price < best : p.price > best)
+                    best := p.price
+                    nm   := p.name
+    if na(best)
+        best := isLong ? entry + minRR * risk : entry - minRR * risk
+        nm   := str.tostring(minRR, "0.#") + "R"
+    [best, nm]
+
+// ── Drawing ───────────────────────────────────────────────────────────────────────
+rText(float r) =>
+    (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
+
+drawSetup(Setup s) =>
+    int right = s.sigT + M15MS
+    s.bxGain := box.new(left = s.sigT, top = math.max(s.entry, s.tp2), right = right, bottom = math.min(s.entry, s.tp2), xloc = xloc.bar_time,
+         border_color = color.new(colGain, 50), border_width = 1, bgcolor = color.new(colGain, 85))
+    s.bxRisk := box.new(left = s.sigT, top = math.max(s.entry, s.sl), right = right, bottom = math.min(s.entry, s.sl), xloc = xloc.bar_time,
+         border_color = color.new(colRisk, 50), border_width = 1, bgcolor = color.new(colRisk, 85))
+    s.lnTp1  := line.new(x1 = s.sigT, y1 = s.tp1, x2 = right, y2 = s.tp1, xloc = xloc.bar_time, color = color.new(colGain, 20), style = line.style_dotted, width = 1)
+    string txt = (s.isLong ? "▲ Long" : "▼ Short") + " · " + s.model + " · " + s.kz +
+         "\nEntry " + fmtPx(s.entry) + "   SL " + fmtPx(s.sl) +
+         "\nTP1 " + fmtPx(s.tp1) + "   TP2 " + fmtPx(s.tp2) + " (" + s.tp2Name + ")   " + str.tostring(s.rr, "0.0") + "R"
+    s.lbSig := label.new(x = s.sigT, y = s.sl, text = txt, xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(#212121, 20), style = s.isLong ? label.style_label_up : label.style_label_down,
+         textcolor = color.white, size = size.small, textalign = text.align_left)
+    s
+
+extendSetup(Setup s, int t) =>
+    int right = t + M15MS
+    box.set_right(s.bxGain, right)
+    box.set_right(s.bxRisk, right)
+    line.set_x2(s.lnTp1, right)
+    s
+
+// Removes the oldest finished setups beyond `keepSetups`.
+trimSetups() =>
+    while setups.size() > keepSetups
+        Setup old = setups.shift()
+        if not na(old.bxGain)
+            box.delete(old.bxGain)
+            box.delete(old.bxRisk)
+            line.delete(old.lnTp1)
+            label.delete(old.lbSig)
+        if not na(old.lbEnd)
+            label.delete(old.lbEnd)
+    setups.size()
+
+cancelSetup(Setup s, string why, int t) =>
+    bool wasOrder = s.state == 1
+    s.state := 4
+    s.endT  := t
+    if wasOrder and not na(s.bxGain)
+        if showMissed
+            extendSetup(s, t)
+            box.set_bgcolor(s.bxGain, color.new(colGain, 95))
+            box.set_bgcolor(s.bxRisk, color.new(colRisk, 95))
+            label.set_text(s.lbSig, label.get_text(s.lbSig) + "\nNot filled: " + why)
+            label.set_color(s.lbSig, color.new(#212121, 60))
+        else
+            box.delete(s.bxGain)
+            box.delete(s.bxRisk)
+            line.delete(s.lnTp1)
+            label.delete(s.lbSig)
+            s.bxGain := na
+    s
+
+closeSetup(Setup s, float px, int t, string why) =>
+    float risk  = math.abs(s.entry - s.sl)
+    float part  = partialPct / 100
+    float rExit = (s.isLong ? px - s.entry : s.entry - px) / risk
+    float r1    = (s.isLong ? s.tp1 - s.entry : s.entry - s.tp1) / risk
+    s.r     := s.tp1Hit ? part * r1 + (1 - part) * rExit : rExit
+    s.state := 3
+    s.endT  := t
+    extendSetup(s, t)
+    color c = s.r > 0 ? colGain : s.r < 0 ? colRisk : color.gray
+    s.lbEnd := label.new(x = t + M15MS, y = px, text = rText(s.r) + "  " + why, xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(c, 10), style = label.style_label_left, textcolor = color.white, size = size.small)
+    bump(3, 1)
+    bump(4, s.r)
+    if s.r > 0
+        bump(2, 1)
+    if setAlerts
+        alert("John · " + syminfo.ticker + " · " + (s.isLong ? "Long" : "Short") + " closed: " + why + " " + rText(s.r), alert.freq_once_per_bar_close)
+    s
+
+// Turns an armed setup into an order once the MSS has displaced: entry, stop and targets.
+// Returns true when the order is placed, false when the setup is dropped.
+placeOrder(Setup s, int pos, int t, float atr) =>
+    bool ok      = false
+    int  raidPos = bufPos(s.raidIdx)
+    if raidPos >= 0 and dispAt(pos, s.isLong, atr)
+        [fTop, fBot] = legFvg(raidPos, pos, s.isLong, s.raidPx)
+        if not na(fTop)
+            float ext = s.isLong ? mH.get(raidPos) : mL.get(raidPos)
+            for j = raidPos to pos
+                ext := s.isLong ? math.max(ext, mH.get(j)) : math.min(ext, mL.get(j))
+            float entry = entryMode == "FVG edge" ? (s.isLong ? fTop : fBot) : entryMode == "FVG midpoint (CE)" ? (fTop + fBot) / 2 :
+                 (s.isLong ? ext - 0.705 * (ext - s.raidPx) : ext + 0.705 * (s.raidPx - ext))
+            float sl    = s.isLong ? s.raidPx - slBuffer * pipSize : s.raidPx + slBuffer * pipSize
+            float risk  = math.abs(entry - sl)
+            if risk > 0 and (s.isLong ? entry < ext : entry > ext)
+                [tp2, tp2Nm] = pickTarget(s.isLong, ext, entry, risk)
+                float rr = math.abs(tp2 - entry) / risk
+                if rr >= minRR
+                    s.extPx   := ext
+                    s.entry   := entry
+                    s.sl      := sl
+                    s.stop    := sl
+                    s.tp1     := ext
+                    s.tp2     := tp2
+                    s.tp2Name := tp2Nm
+                    s.rr      := rr
+                    s.fvgTop  := fTop
+                    s.fvgBot  := fBot
+                    s.sigT    := t
+                    s.state   := 1
+                    ok        := true
+    ok
+
+// Moves one setup forward by one M15 candle (o, h, l, c, t) at buffer position `pos`.
+stepSetup(Setup s, float o, float h, float l, float c, int t, int pos, float atr, int absIdx) =>
+    if s.state == 0 and absIdx > s.raidIdx
+        if s.isLong ? l < s.raidPx : h > s.raidPx
+            s.raidPx := s.isLong ? l : h
+        if absIdx - s.raidIdx > maxToMss or kzOf(t) == ""
+            cancelSetup(s, "no MSS in time", t)
+        else if s.isLong ? c > s.legPx : c < s.legPx
+            if placeOrder(s, pos, t, atr)
+                drawSetup(s)
+                bump(0, 1)
+                kzSigs.put(s.kzKey, nz(kzSigs.get(s.kzKey)) + 1)
+                if setAlerts
+                    alert("John · " + syminfo.ticker + " · " + (s.isLong ? "Long" : "Short") + " setup (" + s.model + ", " + s.kz + "): entry " +
+                         fmtPx(s.entry) + ", SL " + fmtPx(s.sl) + ", TP1 " + fmtPx(s.tp1) + ", TP2 " + fmtPx(s.tp2) + " (" + s.tp2Name + "), " +
+                         str.tostring(s.rr, "0.0") + "R", alert.freq_once_per_bar_close)
+            else
+                cancelSetup(s, "no displacement / FVG / R:R", t)
+    else if s.state == 1 and t > s.sigT
+        bool fill = s.isLong ? l <= s.entry : h >= s.entry
+        if fill
+            s.state := 2
+            s.fillT := t
+            bump(1, 1)
+            if setAlerts
+                alert("John · " + syminfo.ticker + " · " + (s.isLong ? "Long" : "Short") + " filled at " + fmtPx(s.entry), alert.freq_once_per_bar_close)
+            if s.isLong ? l <= s.sl : h >= s.sl
+                closeSetup(s, s.sl, t, "SL (same candle)")
+            else
+                extendSetup(s, t)
+        else if s.isLong ? h >= s.tp1 : l <= s.tp1
+            cancelSetup(s, "price reached TP1 first", t)
+        else if s.isLong ? c < s.fvgBot : c > s.fvgTop
+            cancelSetup(s, "FVG closed through", t)
+        else if kzOf(t) == ""
+            cancelSetup(s, "killzone ended", t)
+        else
+            extendSetup(s, t)
+    else if s.state == 2 and t > s.fillT
+        if s.isLong ? l <= s.stop : h >= s.stop
+            closeSetup(s, s.stop, t, s.tp1Hit and moveBE ? "stop at entry" : "SL")
+        else
+            if not s.tp1Hit and (s.isLong ? h >= s.tp1 : l <= s.tp1)
+                s.tp1Hit := true
+                if moveBE
+                    s.stop := s.entry
+            if s.isLong ? h >= s.tp2 : l <= s.tp2
+                closeSetup(s, s.tp2, t, "TP2")
+            else if (nyMins(t) >= flatHour * 60 and nyMins(s.fillT) < flatHour * 60) or t - s.fillT >= 86400000
+                closeSetup(s, c, t, "flat at " + str.tostring(flatHour) + ":00")
+            else
+                extendSetup(s, t)
+    s
+
+// ── Engine: one pass per M15 candle on this chart candle ─────────────────────────
+if barstate.isconfirmed and showSetups and tfSec <= 14400 and feedIsM15 and cC.size() > 0
+    for k = 0 to cC.size() - 1
+        float o = cO.get(k)
+        float h = cH.get(k)
+        float l = cL.get(k)
+        float c = cC.get(k)
+        int   t = cT.get(k)
+        mO.push(o)
+        mH.push(h)
+        mL.push(l)
+        mC.push(c)
+        mT.push(t)
+        mCount += 1
+        if mH.size() > MBUF
+            mO.shift()
+            mH.shift()
+            mL.shift()
+            mC.shift()
+            mT.shift()
+        int   pos = mH.size() - 1
+        int   absI = mCount - 1
+        float atr = m15Atr()
+
+        // Arm: a pool first traded through on this candle, inside an enabled killzone, with the bias.
+        string kz = kzOf(t)
+        if kz != "" and takenNow.size() > 0
+            for p in takenNow
+                if p.sweepTime == t
+                    bool   isLong = not p.isBuy
+                    string key    = str.format_time(t, "yyyyMMdd", NY_TZ) + kz
+                    bool   busy   = false
+                    for q in setups
+                        if q.isLong == isLong and q.state <= 2
+                            busy := true
+                    if not busy and biasAllows(isLong) and nz(kzSigs.get(key)) < maxPerKz
+                        float lvl = legSwing(pos, isLong)
+                        if not na(lvl)
+                            bool judas = kz == "London KZ" and (isLong ? l < asiaSpan.lo : h > asiaSpan.hi)
+                            Setup s = Setup.new(isLong, judas ? "2022 model · Judas" : "2022 model", kz, key)
+                            s.raidPx  := isLong ? l : h
+                            s.raidIdx := absI
+                            s.legPx   := lvl
+                            setups.push(s)
+
+        // Advance every open idea by this candle.
+        for s in setups
+            if s.state <= 2
+                stepSetup(s, o, h, l, c, t, pos, atr, absI)
+    trimSetups()
+
+// Stats: paper results of every setup on the loaded history (needs M15 data, so recent history only).
+var table statsTbl = na
+if showSetups and showStats and barstate.islast
+    if na(statsTbl)
+        statsTbl := table.new(statsPos == "Bottom right" ? position.bottom_right : statsPos == "Bottom left" ? position.bottom_left : position.top_left, 2, 6,
+             frame_color = color.new(color.gray, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
+    color hb = #424242
+    color rb = color.new(#424242, 20)
+    table.cell(statsTbl, 0, 0, "2022 model", text_color = color.white, bgcolor = hb, text_size = biasTxtSz)
+    table.cell(statsTbl, 1, 0, "paper", text_color = color.white, bgcolor = hb, text_size = biasTxtSz)
+    table.cell(statsTbl, 0, 1, "Setups", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
+    table.cell(statsTbl, 1, 1, str.tostring(stats.get(0), "0"), text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
+    table.cell(statsTbl, 0, 2, "Filled", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
+    table.cell(statsTbl, 1, 2, str.tostring(stats.get(1), "0"), text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
+    table.cell(statsTbl, 0, 3, "Win rate", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
+    table.cell(statsTbl, 1, 3, stats.get(3) > 0 ? str.tostring(100.0 * stats.get(2) / stats.get(3), "0") + "%" : "–", text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
+    table.cell(statsTbl, 0, 4, "Average", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
+    table.cell(statsTbl, 1, 4, stats.get(3) > 0 ? rText(stats.get(4) / stats.get(3)) : "–", text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
+    table.cell(statsTbl, 0, 5, "Total", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
+    table.cell(statsTbl, 1, 5, stats.get(3) > 0 ? rText(stats.get(4)) : "–", text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
+
 // ════════════════════════════════════════════════════════════════════════════════
 // DATA WINDOW
 // ════════════════════════════════════════════════════════════════════════════════

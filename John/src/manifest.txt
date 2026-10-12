@@ -15,7 +15,7 @@
 12_engine.pine
 13_render.pine
 14_days.pine
-15_daily_bias.pine
+# 15_daily_bias.pine        (disabled: see src/disabled/)
 16_pd_arrays.pine
 17_setups.pine
 18_data_window.pine

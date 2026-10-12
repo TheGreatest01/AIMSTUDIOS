@@ -14,9 +14,11 @@
 //   Liquidity map    · BSL/SSL pools, equal highs/lows, raid vs run (Spec Part 3.1–3.3)
 //   Time map         · midnight separators, day names, killzone boxes (Spec Part 1.2–1.3, 5.1)
 //   Power of 3       · accumulation, manipulation (Judas swing) and distribution boxes (Spec Part 5.3)
-//   Daily bias       · six votes → Bullish / Bearish / Neutral, draw on liquidity, invalidation (Spec Part 8)
-//   PD arrays        · FVGs, order blocks, BOS/MSS on D, H4, H1, M15 (Spec Part 2.3–2.4, 4)
-//   Setups           · ICT 2022 model on M15: entry, stop-loss, TP1/TP2, paper results (Spec Part 9)
+//   PD arrays        · FVGs and order blocks on D, H4, H1, M15: draws on liquidity, not entries (Spec Part 2.3–2.4, 4)
+//   Setups           · raid of liquidity → market structure shift on M1/M3/M5 → entry at the M1/M3/M5 FVG
+//                      (or order block), stop beyond the peak, target the next untaken liquidity
+//
+// Switched off for now (kept in John/src/disabled/, not built): Daily bias, IPDA 20/40/60 ranges.
 
 //@version=6
 indicator("John — ICT Engine", shorttitle = "John", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)

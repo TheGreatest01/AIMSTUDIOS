@@ -1,421 +1,517 @@
 // ════════════════════════════════════════════════════════════════════════════════
-// SETUPS · ICT 2022 MODEL WITH ENTRY, STOP AND TARGETS (Spec Part 9)
+// SETUPS · RAID → MSS → FVG ENTRY
 // ════════════════════════════════════════════════════════════════════════════════
-// Runs on M15 candles (the same signals on every chart): inside a killzone and with the daily bias,
-//   1 · a sellside pool is traded through (longs; buyside for shorts) — the raid;
-//   2 · within a few M15 candles, a close through the swing high that started the drop into the raid,
-//       with displacement — the market structure shift;
-//   3 · the first FVG of that displacement leg gives the entry (edge, midpoint or OTE 70.5%);
-//   4 · stop beyond the raid, TP1 at the displacement high, TP2 at the day's draw on liquidity
-//       (or the next untaken pool), only if reward:risk to TP2 meets the minimum.
-// The order waits for a fill until the killzone ends; each trade is then tracked to TP2, the stop,
-// or the flat time, with a partial at TP1. Results feed the stats table (paper results, not advice).
-const string GRP_SET = "Setups · 2022 model (Spec Part 9)"
+// Structure and liquidity come from H4, H1 and M15; entries come from M5, M3 and M1.
+// Short (a long mirrors it):
+//   1 · Raid: price trades above a liquidity level, mainly an M15 ITH. Everything above the level is
+//       the manipulation; its highest point is the peak. Leg 1 runs up into the peak, leg 2 runs down
+//       out of it. The turn can take several M15 candles.
+//   2 · MSS: in leg 2, the first close below the most recent short-term low (a low with a higher low
+//       on each side) on M1, M3 or M5, whichever happens first, back below the raided level.
+//   3 · Entry: the fair value gap leg 2 leaves on that timeframe (an order block if none forms): a
+//       limit order at the edge price first re-enters.
+//   4 · Stop above the peak. Target: the most recent untaken liquidity below, mainly an M15 ITL.
+// Built from M1 candles (M3 and M5 are assembled from them), so the same setups appear on M1, M3,
+// M5 and M15 charts. Paper results, not advice.
+const string GRP_SET = "Setups · raid → MSS → FVG"
 
-bool   showSetups = input.bool(true, "Show setups (entry, stop-loss, targets)", group = GRP_SET,
-     tooltip = "Signals come from M15 candles on every chart. Shown on charts of H4 or lower.")
-bool   setLdn     = input.bool(true, "Trade in  London KZ", inline = "skz", group = GRP_SET)
-bool   setAM      = input.bool(true, "NY AM",               inline = "skz", group = GRP_SET)
-bool   setPM      = input.bool(true, "NY PM",               inline = "skz", group = GRP_SET)
-string biasGate   = input.string("Bullish/Bearish only", "Daily bias filter", options = ["Bullish/Bearish only", "Strong only", "Off"], group = GRP_SET,
-     tooltip = "Longs only on bullish days and shorts only on bearish days (not invalidated). Off trades both ways.")
-string entryMode  = input.string("FVG edge", "Entry", options = ["FVG edge", "FVG midpoint (CE)", "OTE 70.5%"], group = GRP_SET)
-float  setDisp    = input.float(1.2, "Displacement: bodies ≥ × M15 ATR", minval = 0.3, step = 0.1, group = GRP_SET)
-int    maxToMss   = input.int(10, "M15 candles allowed from raid to MSS", minval = 2, maxval = 40, group = GRP_SET)
-float  slBuffer   = input.float(1.0, "Stop buffer beyond the raid (pips; ticks off forex)", minval = 0, step = 0.5, group = GRP_SET)
-float  minRR      = input.float(2.0, "Minimum reward:risk to TP2", minval = 0.5, step = 0.25, group = GRP_SET)
-float  partialPct = input.float(50, "Close at TP1 (%)", minval = 0, maxval = 100, step = 5, group = GRP_SET)
-bool   moveBE     = input.bool(true, "Move the stop to entry once TP1 is hit", group = GRP_SET)
-int    flatHour   = input.int(16, "Close any open trade at (New York hour)", minval = 0, maxval = 23, group = GRP_SET)
-int    maxPerKz   = input.int(1, "Setups per killzone", minval = 1, maxval = 5, group = GRP_SET)
-int    keepSetups = input.int(30, "Setups kept on chart", minval = 1, maxval = 60, group = GRP_SET)
+bool   showSetups = input.bool(true, "Show setups (entry, stop-loss, target)", group = GRP_SET,
+     tooltip = "Shown on M1, M3, M5 and M15 charts. TradingView only supplies M1 data for recent history on M3–M15 charts.")
+bool   rdSwing    = input.bool(true, "Raids of  swing highs/lows", inline = "rd1", group = GRP_SET)
+bool   rdSess     = input.bool(true, "killzone highs/lows",        inline = "rd1", group = GRP_SET)
+bool   rdDay      = input.bool(true, "Raids of  PDH/PDL, PWH/PWL", inline = "rd2", group = GRP_SET)
+bool   rdEq       = input.bool(true, "equal highs/lows",           inline = "rd2", group = GRP_SET,
+     tooltip = "Which liquidity pools can start a setup. The pools themselves are switched on under Liquidity pools (M15 swing highs/lows are the main ones).")
+bool   mssM1      = input.bool(true, "MSS on  M1", inline = "mtf", group = GRP_SET)
+bool   mssM3      = input.bool(true, "M3",         inline = "mtf", group = GRP_SET)
+bool   mssM5      = input.bool(true, "M5",         inline = "mtf", group = GRP_SET,
+     tooltip = "The earliest close through a short-term low (short) / high (long) on any ticked timeframe is the market structure shift.")
+bool   mssInside  = input.bool(true, "MSS must close back inside the raided level", group = GRP_SET)
+int    raidWindow = input.int(8, "M15 candles allowed from the peak to the MSS", minval = 1, maxval = 48, group = GRP_SET)
+int    fvgWait    = input.int(3, "Candles to wait for an FVG after the MSS, then use an order block", minval = 0, maxval = 10, group = GRP_SET)
+int    orderLife  = input.int(8, "M15 candles an unfilled order stays live", minval = 1, maxval = 96, group = GRP_SET)
+float  slBuffer   = input.float(1.0, "Stop buffer beyond the peak (pips; ticks off forex)", minval = 0, step = 0.5, group = GRP_SET)
+float  minRR      = input.float(1.0, "Minimum reward:risk", minval = 0, step = 0.25, group = GRP_SET)
+float  fallbackRR = input.float(2.0, "Target when no liquidity is found on the other side (R)", minval = 0.5, step = 0.5, group = GRP_SET)
+bool   kzOnly     = input.bool(false, "Only raids inside the London killzone or NY AM/PM sessions", group = GRP_SET,
+     tooltip = "Off by default: the model works regardless of time.")
+int    keepSetups = input.int(20, "Setups kept on chart", minval = 1, maxval = 40, group = GRP_SET)
 bool   showMissed = input.bool(false, "Also show setups that never filled", group = GRP_SET)
 color  colGain    = input.color(#26A69A, "Target zone", inline = "scol", group = GRP_SET)
 color  colRisk    = input.color(#EF5350, "Risk zone",   inline = "scol", group = GRP_SET)
+color  colEntryZ  = input.color(#7E57C2, "Entry FVG/OB", inline = "scol", group = GRP_SET)
 bool   showStats  = input.bool(true, "Stats table (paper results on the loaded history)", group = GRP_SET)
-string statsPos   = input.string("Bottom right", "Stats table position", options = ["Bottom right", "Bottom left", "Top left"], group = GRP_SET)
+string statsPos   = input.string("Bottom right", "Stats table position", options = ["Bottom right", "Bottom left", "Top right", "Top left"], group = GRP_SET)
 bool   setAlerts  = input.bool(true, "Alerts: new setup, fill, exit", group = GRP_SET)
 
-// One trade idea. state: 0 armed (raid seen, waiting for MSS) · 1 order waiting · 2 in the trade ·
-// 3 closed · 4 cancelled.
-type Setup
+// One entry timeframe (M1, M3 or M5) built from M1 candles: its recent candles, the candle being
+// built, and its most recent confirmed short-term high and low.
+type Ltf
+    int          mins
+    string       name
+    array<float> o
+    array<float> h
+    array<float> l
+    array<float> c
+    array<int>   t
+    float        bo
+    float        bh
+    float        bl
+    float        bc
+    int          bt
+    float        sth
+    int          sthT
+    float        stl
+    int          stlT
+
+// One setup. state: 0 raid seen, waiting for the MSS · 1 MSS seen, waiting for an FVG · 2 order
+// waiting · 3 in the trade · 4 closed · 5 dropped.
+type Trade
     bool   isLong
-    string model
-    string kz
-    string kzKey
-    int    state  = 0
-    float  raidPx
-    int    raidIdx
-    float  legPx
-    float  extPx
+    string level
+    float  levelPx
+    int    state = 0
+    float  peak
+    int    peakT
+    int    mssTf
+    float  mssLvl
+    int    mssLvlT
+    int    mssT
+    int    waitLeft
+    float  zTop
+    float  zBot
+    int    zT
+    string zKind
     float  entry
     float  sl
-    float  stop
-    float  tp1
-    float  tp2
-    string tp2Name
+    float  tp
+    string tpName
     float  rr
-    float  fvgTop
-    float  fvgBot
     int    sigT
     int    fillT
-    int    endT
-    bool   tp1Hit = false
     float  r
+    box    bxZone
     box    bxGain
     box    bxRisk
-    line   lnTp1
+    line   lnMss
+    label  lbMss
     label  lbSig
     label  lbEnd
 
-var array<Setup>   setups    = array.new<Setup>()
-var map<string, int> kzSigs  = map.new<string, int>()   // signals per killzone (date + killzone)
-var array<float>   mO        = array.new<float>()       // recent M15 candles, oldest first
-var array<float>   mH        = array.new<float>()
-var array<float>   mL        = array.new<float>()
-var array<float>   mC        = array.new<float>()
-var array<int>     mT        = array.new<int>()
-var int            mCount    = 0                         // M15 candles taken in so far
-var array<float>   stats     = array.from(0.0, 0.0, 0.0, 0.0, 0.0)   // setups, filled, wins, closed, total R
-const int          MBUF      = 300
-const int          M15MS     = 900000
+var Ltf          tf1    = Ltf.new(1, "M1", array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<int>())
+var Ltf          tf3    = Ltf.new(3, "M3", array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<int>())
+var Ltf          tf5    = Ltf.new(5, "M5", array.new<float>(), array.new<float>(), array.new<float>(), array.new<float>(), array.new<int>())
+var array<Trade> trades = array.new<Trade>()
+var array<float> tStats = array.from(0.0, 0.0, 0.0, 0.0, 0.0)   // setups, filled, wins, closed, total R
+const int        LBUF   = 150
+const int        MIN_MS = 60000
+const int        M15_MS = 900000
 
-// ── Helpers on the M15 buffer ─────────────────────────────────────────────────────
-bump(int i, float v) =>
-    stats.set(i, stats.get(i) + v)
+// M1 candles inside this chart candle (M3–M15 charts); an M1 chart uses its own candle. Charts above
+// M15 show no setups, so they request their own timeframe to keep the load light.
+string reqM1 = tfSec <= 900 ? "1" : timeframe.period
+[l1O, l1H, l1L, l1C, l1T] = request.security_lower_tf(syminfo.tickerid, reqM1, [open, high, low, close, time], ignore_invalid_timeframe = true)
 
-bufPos(int absIdx) =>
-    absIdx - (mCount - mH.size())
+// ── Small helpers ─────────────────────────────────────────────────────────────────
+statAdd(int i, float v) =>
+    tStats.set(i, tStats.get(i) + v)
 
-// Average true range of the last 14 M15 candles.
-m15Atr() =>
-    int   n   = mH.size()
-    float s   = 0.0
-    int   cnt = 0
-    if n >= 2
-        for i = math.max(1, n - 14) to n - 1
-            s   += math.max(mH.get(i) - mL.get(i), math.max(math.abs(mH.get(i) - mC.get(i - 1)), math.abs(mL.get(i) - mC.get(i - 1))))
-            cnt += 1
-    cnt > 0 ? s / cnt : na
+mssOn(int mins) =>
+    mins == 1 ? mssM1 : mins == 3 ? mssM3 : mssM5
 
-// The swing the MSS must close through: for a long, the most recent 3-candle swing high before the
-// raid candle (the high that began the drop into the raid); for a short, the swing low.
-legSwing(int raidPos, bool isLong) =>
-    float lvl = na
-    if raidPos >= 2
-        for j = raidPos - 1 to math.max(1, raidPos - 30)
-            bool sw = isLong ? mH.get(j) > mH.get(j - 1) and mH.get(j) >= mH.get(j + 1) : mL.get(j) < mL.get(j - 1) and mL.get(j) <= mL.get(j + 1)
-            if sw
-                lvl := isLong ? mH.get(j) : mL.get(j)
-                break
-    lvl
-
-// Displacement at buffer position `pos`: the run of up to 3 candles of the trade's colour ending
-// there has bodies totalling at least `setDisp` × M15 ATR, every body at least 60% of its candle.
-dispAt(int pos, bool isLong, float atr) =>
-    float run   = 0.0
-    bool  clean = true
-    int   cnt   = 0
-    for i = 0 to 2
-        int j = pos - i
-        if j < 0
-            break
-        bool same = isLong ? mC.get(j) > mO.get(j) : mC.get(j) < mO.get(j)
-        if not same
-            break
-        float body = math.abs(mC.get(j) - mO.get(j))
-        run += body
-        cnt += 1
-        if body < 0.6 * (mH.get(j) - mL.get(j))
-            clean := false
-    cnt > 0 and clean and not na(atr) and run >= setDisp * atr
-
-// The first FVG of the displacement leg after the raid (Spec 4.1), beyond the raid extreme: [top, bottom].
-legFvg(int raidPos, int pos, bool isLong, float raidPx) =>
-    float top = na
-    float bot = na
-    if pos - raidPos >= 2
-        for j = raidPos + 2 to pos
-            if isLong and mL.get(j) > mH.get(j - 2) and mH.get(j - 2) > raidPx
-                top := mL.get(j)
-                bot := mH.get(j - 2)
-                break
-            if not isLong and mH.get(j) < mL.get(j - 2) and mL.get(j - 2) < raidPx
-                top := mL.get(j - 2)
-                bot := mH.get(j)
-                break
-    [top, bot]
-
-nyMins(int t) =>
-    hour(t, NY_TZ) * 60 + minute(t, NY_TZ)
+raidKindOn(string kind) =>
+    kind == "IT" or kind == "LT" ? rdSwing : kind == "SESS" ? rdSess : kind == "PD" or kind == "PW" ? rdDay : kind == "EQ" ? rdEq : false
 
 inSessT(int t, string sess) =>
     int sm = math.round(str.tonumber(str.substring(sess, 0, 2))) * 60 + math.round(str.tonumber(str.substring(sess, 2, 4)))
     int em = math.round(str.tonumber(str.substring(sess, 5, 7))) * 60 + math.round(str.tonumber(str.substring(sess, 7, 9)))
-    int m  = nyMins(t)
+    int m  = hour(t, NY_TZ) * 60 + minute(t, NY_TZ)
     em > sm ? m >= sm and m < em : m >= sm or m < em
 
-// Which enabled killzone an M15 candle opens in ("" when none).
-kzOf(int t) =>
-    setLdn and inSessT(t, sessLdn) ? "London KZ" : setAM and inSessT(t, sessAM) ? "NY AM" : setPM and inSessT(t, sessPM) ? "NY PM" : ""
+inKillzone(int t) =>
+    inSessT(t, sessLdn) or inSessT(t, sessAM) or inSessT(t, sessPM)
 
-biasAllows(bool isLong) =>
-    biasGate == "Off" ? true : (isLong ? biasTxt == "Bullish" : biasTxt == "Bearish") and not biasInvalid and (biasGate != "Strong only" or strong)
+rText(float r) =>
+    (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
 
-// TP2: the day's draw on liquidity when it lies beyond TP1, otherwise the nearest untaken pool beyond
-// TP1, otherwise `minRR` × risk. Returns [price, name].
-pickTarget(bool isLong, float beyond, float entry, float risk) =>
-    float best = na
-    string nm  = ""
-    if not na(dolPx) and (isLong ? dolPx > beyond : dolPx < beyond)
-        best := dolPx
-        nm   := "DOL " + dolName
+// ── Drawing ───────────────────────────────────────────────────────────────────────
+dropDrawings(Trade tr) =>
+    if not na(tr.bxZone)
+        box.delete(tr.bxZone)
+    if not na(tr.bxGain)
+        box.delete(tr.bxGain)
+        box.delete(tr.bxRisk)
+    if not na(tr.lnMss)
+        line.delete(tr.lnMss)
+        label.delete(tr.lbMss)
+    if not na(tr.lbSig)
+        label.delete(tr.lbSig)
+    if not na(tr.lbEnd)
+        label.delete(tr.lbEnd)
+    tr
+
+extendTrade(Trade tr, int t) =>
+    int right = t + MIN_MS
+    if not na(tr.bxZone)
+        box.set_right(tr.bxZone, right)
+    if not na(tr.bxGain)
+        box.set_right(tr.bxGain, right)
+        box.set_right(tr.bxRisk, right)
+    tr
+
+drawMss(Trade tr, Ltf f, int closeT) =>
+    color c = tr.isLong ? colGain : colRisk
+    tr.lnMss := line.new(x1 = tr.mssLvlT, y1 = tr.mssLvl, x2 = closeT, y2 = tr.mssLvl, xloc = xloc.bar_time, color = c, style = line.style_solid, width = 1)
+    tr.lbMss := label.new(x = closeT, y = tr.mssLvl, text = "MSS (" + f.name + ")", xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(c, 100), style = tr.isLong ? label.style_label_down : label.style_label_up, textcolor = c, size = size.small)
+    tr
+
+drawOrder(Trade tr, Ltf f) =>
+    int right = tr.sigT + MIN_MS
+    tr.bxZone := box.new(left = tr.zT, top = tr.zTop, right = right, bottom = tr.zBot, xloc = xloc.bar_time,
+         border_color = color.new(colEntryZ, 40), border_width = 1, bgcolor = color.new(colEntryZ, 80),
+         text = f.name + " " + tr.zKind, text_size = size.tiny, text_color = colEntryZ, text_halign = text.align_right)
+    tr.bxGain := box.new(left = tr.sigT, top = math.max(tr.entry, tr.tp), right = right, bottom = math.min(tr.entry, tr.tp), xloc = xloc.bar_time,
+         border_color = color.new(colGain, 50), border_width = 1, bgcolor = color.new(colGain, 85))
+    tr.bxRisk := box.new(left = tr.sigT, top = math.max(tr.entry, tr.sl), right = right, bottom = math.min(tr.entry, tr.sl), xloc = xloc.bar_time,
+         border_color = color.new(colRisk, 50), border_width = 1, bgcolor = color.new(colRisk, 85))
+    string txt = (tr.isLong ? "▲ Long" : "▼ Short") + " · raid of " + tr.level + " · MSS " + f.name + " · " + f.name + " " + tr.zKind +
+         "\nEntry " + fmtPx(tr.entry) + "   SL " + fmtPx(tr.sl) +
+         "\nTarget " + fmtPx(tr.tp) + " (" + tr.tpName + ")   " + str.tostring(tr.rr, "0.0") + "R"
+    tr.lbSig := label.new(x = tr.sigT, y = tr.sl, text = txt, xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(#212121, 20), style = tr.isLong ? label.style_label_up : label.style_label_down,
+         textcolor = color.white, size = size.small, textalign = text.align_left)
+    tr
+
+// Drops a setup that never became a trade (its drawings go, or fade when kept).
+dropTrade(Trade tr, string why, int t) =>
+    tr.state := 5
+    if showMissed and not na(tr.lbSig)
+        extendTrade(tr, t)
+        box.set_bgcolor(tr.bxGain, color.new(colGain, 95))
+        box.set_bgcolor(tr.bxRisk, color.new(colRisk, 95))
+        label.set_text(tr.lbSig, label.get_text(tr.lbSig) + "\nNot filled: " + why)
+        label.set_color(tr.lbSig, color.new(#212121, 60))
     else
+        dropDrawings(tr)
+    tr
+
+closeTrade(Trade tr, float px, int t, string why) =>
+    tr.r     := (tr.isLong ? px - tr.entry : tr.entry - px) / math.abs(tr.entry - tr.sl)
+    tr.state := 4
+    extendTrade(tr, t)
+    color c = tr.r > 0 ? colGain : colRisk
+    tr.lbEnd := label.new(x = t + MIN_MS, y = px, text = rText(tr.r) + "  " + why, xloc = xloc.bar_time, yloc = yloc.price,
+         color = color.new(c, 10), style = label.style_label_left, textcolor = color.white, size = size.small)
+    statAdd(3, 1)
+    statAdd(4, tr.r)
+    if tr.r > 0
+        statAdd(2, 1)
+    if setAlerts
+        alert("John · " + syminfo.ticker + " · " + (tr.isLong ? "Long" : "Short") + " closed: " + why + " " + rText(tr.r), alert.freq_once_per_bar_close)
+    tr
+
+// ── Entry zone, stop and target ───────────────────────────────────────────────────
+// Target: the most recent untaken M15 intermediate/long-term swing on the other side of the entry,
+// otherwise the nearest untaken pool there, otherwise `fallbackRR` × risk. Returns [price, name].
+pickTarget(bool isLong, float entry, float risk) =>
+    float best  = na
+    int   bestT = na
+    string nm   = ""
+    for p in pools
+        if p.state == 0 and p.isBuy == isLong and p.rank == 1 and (p.kind == "IT" or p.kind == "LT") and (isLong ? p.price > entry : p.price < entry)
+            if na(bestT) or p.originTime > bestT
+                best  := p.price
+                bestT := p.originTime
+                nm    := p.name
+    if na(best)
         for p in pools
-            if p.state == 0 and p.isBuy == isLong and (isLong ? p.price > beyond : p.price < beyond)
+            if p.state == 0 and p.isBuy == isLong and (isLong ? p.price > entry : p.price < entry)
                 if na(best) or (isLong ? p.price < best : p.price > best)
                     best := p.price
                     nm   := p.name
     if na(best)
-        best := isLong ? entry + minRR * risk : entry - minRR * risk
-        nm   := str.tostring(minRR, "0.#") + "R"
+        best := isLong ? entry + fallbackRR * risk : entry - fallbackRR * risk
+        nm   := str.tostring(fallbackRR, "0.#") + "R"
     [best, nm]
 
-// ── Drawing ───────────────────────────────────────────────────────────────────────
-rText(float r) =>
-    (r >= 0 ? "+" : "") + str.tostring(r, "0.0") + "R"
-
-drawSetup(Setup s) =>
-    int right = s.sigT + M15MS
-    s.bxGain := box.new(left = s.sigT, top = math.max(s.entry, s.tp2), right = right, bottom = math.min(s.entry, s.tp2), xloc = xloc.bar_time,
-         border_color = color.new(colGain, 50), border_width = 1, bgcolor = color.new(colGain, 85))
-    s.bxRisk := box.new(left = s.sigT, top = math.max(s.entry, s.sl), right = right, bottom = math.min(s.entry, s.sl), xloc = xloc.bar_time,
-         border_color = color.new(colRisk, 50), border_width = 1, bgcolor = color.new(colRisk, 85))
-    s.lnTp1  := line.new(x1 = s.sigT, y1 = s.tp1, x2 = right, y2 = s.tp1, xloc = xloc.bar_time, color = color.new(colGain, 20), style = line.style_dotted, width = 1)
-    string txt = (s.isLong ? "▲ Long" : "▼ Short") + " · " + s.model + " · " + s.kz +
-         "\nEntry " + fmtPx(s.entry) + "   SL " + fmtPx(s.sl) +
-         "\nTP1 " + fmtPx(s.tp1) + "   TP2 " + fmtPx(s.tp2) + " (" + s.tp2Name + ")   " + str.tostring(s.rr, "0.0") + "R"
-    s.lbSig := label.new(x = s.sigT, y = s.sl, text = txt, xloc = xloc.bar_time, yloc = yloc.price,
-         color = color.new(#212121, 20), style = s.isLong ? label.style_label_up : label.style_label_down,
-         textcolor = color.white, size = size.small, textalign = text.align_left)
-    s
-
-extendSetup(Setup s, int t) =>
-    int right = t + M15MS
-    box.set_right(s.bxGain, right)
-    box.set_right(s.bxRisk, right)
-    line.set_x2(s.lnTp1, right)
-    s
-
-// Removes the oldest finished setups beyond `keepSetups`.
-trimSetups() =>
-    while setups.size() > keepSetups
-        Setup old = setups.shift()
-        if not na(old.bxGain)
-            box.delete(old.bxGain)
-            box.delete(old.bxRisk)
-            line.delete(old.lnTp1)
-            label.delete(old.lbSig)
-        if not na(old.lbEnd)
-            label.delete(old.lbEnd)
-    setups.size()
-
-cancelSetup(Setup s, string why, int t) =>
-    bool wasOrder = s.state == 1
-    s.state := 4
-    s.endT  := t
-    if wasOrder and not na(s.bxGain)
-        if showMissed
-            extendSetup(s, t)
-            box.set_bgcolor(s.bxGain, color.new(colGain, 95))
-            box.set_bgcolor(s.bxRisk, color.new(colRisk, 95))
-            label.set_text(s.lbSig, label.get_text(s.lbSig) + "\nNot filled: " + why)
-            label.set_color(s.lbSig, color.new(#212121, 60))
-        else
-            box.delete(s.bxGain)
-            box.delete(s.bxRisk)
-            line.delete(s.lnTp1)
-            label.delete(s.lbSig)
-            s.bxGain := na
-    s
-
-closeSetup(Setup s, float px, int t, string why) =>
-    float risk  = math.abs(s.entry - s.sl)
-    float part  = partialPct / 100
-    float rExit = (s.isLong ? px - s.entry : s.entry - px) / risk
-    float r1    = (s.isLong ? s.tp1 - s.entry : s.entry - s.tp1) / risk
-    s.r     := s.tp1Hit ? part * r1 + (1 - part) * rExit : rExit
-    s.state := 3
-    s.endT  := t
-    extendSetup(s, t)
-    color c = s.r > 0 ? colGain : s.r < 0 ? colRisk : color.gray
-    s.lbEnd := label.new(x = t + M15MS, y = px, text = rText(s.r) + "  " + why, xloc = xloc.bar_time, yloc = yloc.price,
-         color = color.new(c, 10), style = label.style_label_left, textcolor = color.white, size = size.small)
-    bump(3, 1)
-    bump(4, s.r)
-    if s.r > 0
-        bump(2, 1)
-    if setAlerts
-        alert("John · " + syminfo.ticker + " · " + (s.isLong ? "Long" : "Short") + " closed: " + why + " " + rText(s.r), alert.freq_once_per_bar_close)
-    s
-
-// Turns an armed setup into an order once the MSS has displaced: entry, stop and targets.
-// Returns true when the order is placed, false when the setup is dropped.
-placeOrder(Setup s, int pos, int t, float atr) =>
-    bool ok      = false
-    int  raidPos = bufPos(s.raidIdx)
-    if raidPos >= 0 and dispAt(pos, s.isLong, atr)
-        [fTop, fBot] = legFvg(raidPos, pos, s.isLong, s.raidPx)
-        if not na(fTop)
-            float ext = s.isLong ? mH.get(raidPos) : mL.get(raidPos)
-            for j = raidPos to pos
-                ext := s.isLong ? math.max(ext, mH.get(j)) : math.min(ext, mL.get(j))
-            float entry = entryMode == "FVG edge" ? (s.isLong ? fTop : fBot) : entryMode == "FVG midpoint (CE)" ? (fTop + fBot) / 2 :
-                 (s.isLong ? ext - 0.705 * (ext - s.raidPx) : ext + 0.705 * (s.raidPx - ext))
-            float sl    = s.isLong ? s.raidPx - slBuffer * pipSize : s.raidPx + slBuffer * pipSize
-            float risk  = math.abs(entry - sl)
-            if risk > 0 and (s.isLong ? entry < ext : entry > ext)
-                [tp2, tp2Nm] = pickTarget(s.isLong, ext, entry, risk)
-                float rr = math.abs(tp2 - entry) / risk
-                if rr >= minRR
-                    s.extPx   := ext
-                    s.entry   := entry
-                    s.sl      := sl
-                    s.stop    := sl
-                    s.tp1     := ext
-                    s.tp2     := tp2
-                    s.tp2Name := tp2Nm
-                    s.rr      := rr
-                    s.fvgTop  := fTop
-                    s.fvgBot  := fBot
-                    s.sigT    := t
-                    s.state   := 1
-                    ok        := true
+// Places the limit order at the zone's edge (the first price a retrace re-enters). Returns true if placed.
+placeOrder(Trade tr, Ltf f, float zTop, float zBot, int zT, string kind, int closeT) =>
+    bool  ok    = false
+    float entry = tr.isLong ? zTop : zBot
+    float sl    = tr.isLong ? tr.peak - slBuffer * pipSize : tr.peak + slBuffer * pipSize
+    float risk  = math.abs(entry - sl)
+    if risk > 0 and (tr.isLong ? entry > sl : entry < sl)
+        [tp, tpNm] = pickTarget(tr.isLong, entry, risk)
+        float rr = math.abs(tp - entry) / risk
+        if rr >= minRR
+            tr.zTop   := zTop
+            tr.zBot   := zBot
+            tr.zT     := zT
+            tr.zKind  := kind
+            tr.entry  := entry
+            tr.sl     := sl
+            tr.tp     := tp
+            tr.tpName := tpNm
+            tr.rr     := rr
+            tr.sigT   := closeT
+            tr.state  := 2
+            ok        := true
+            drawOrder(tr, f)
+            statAdd(0, 1)
+            if setAlerts
+                alert("John · " + syminfo.ticker + " · " + (tr.isLong ? "Long" : "Short") + " setup (raid of " + tr.level + ", MSS " + f.name + "): entry " +
+                     fmtPx(entry) + ", SL " + fmtPx(sl) + ", target " + fmtPx(tp) + " (" + tpNm + "), " + str.tostring(rr, "0.0") + "R", alert.freq_once_per_bar_close)
     ok
 
-// Moves one setup forward by one M15 candle (o, h, l, c, t) at buffer position `pos`.
-stepSetup(Setup s, float o, float h, float l, float c, int t, int pos, float atr, int absIdx) =>
-    if s.state == 0 and absIdx > s.raidIdx
-        if s.isLong ? l < s.raidPx : h > s.raidPx
-            s.raidPx := s.isLong ? l : h
-        if absIdx - s.raidIdx > maxToMss or kzOf(t) == ""
-            cancelSetup(s, "no MSS in time", t)
-        else if s.isLong ? c > s.legPx : c < s.legPx
-            if placeOrder(s, pos, t, atr)
-                drawSetup(s)
-                bump(0, 1)
-                kzSigs.put(s.kzKey, nz(kzSigs.get(s.kzKey)) + 1)
-                if setAlerts
-                    alert("John · " + syminfo.ticker + " · " + (s.isLong ? "Long" : "Short") + " setup (" + s.model + ", " + s.kz + "): entry " +
-                         fmtPx(s.entry) + ", SL " + fmtPx(s.sl) + ", TP1 " + fmtPx(s.tp1) + ", TP2 " + fmtPx(s.tp2) + " (" + s.tp2Name + "), " +
-                         str.tostring(s.rr, "0.0") + "R", alert.freq_once_per_bar_close)
-            else
-                cancelSetup(s, "no displacement / FVG / R:R", t)
-    else if s.state == 1 and t > s.sigT
-        bool fill = s.isLong ? l <= s.entry : h >= s.entry
-        if fill
-            s.state := 2
-            s.fillT := t
-            bump(1, 1)
-            if setAlerts
-                alert("John · " + syminfo.ticker + " · " + (s.isLong ? "Long" : "Short") + " filled at " + fmtPx(s.entry), alert.freq_once_per_bar_close)
-            if s.isLong ? l <= s.sl : h >= s.sl
-                closeSetup(s, s.sl, t, "SL (same candle)")
-            else
-                extendSetup(s, t)
-        else if s.isLong ? h >= s.tp1 : l <= s.tp1
-            cancelSetup(s, "price reached TP1 first", t)
-        else if s.isLong ? c < s.fvgBot : c > s.fvgTop
-            cancelSetup(s, "FVG closed through", t)
-        else if kzOf(t) == ""
-            cancelSetup(s, "killzone ended", t)
-        else
-            extendSetup(s, t)
-    else if s.state == 2 and t > s.fillT
-        if s.isLong ? l <= s.stop : h >= s.stop
-            closeSetup(s, s.stop, t, s.tp1Hit and moveBE ? "stop at entry" : "SL")
-        else
-            if not s.tp1Hit and (s.isLong ? h >= s.tp1 : l <= s.tp1)
-                s.tp1Hit := true
-                if moveBE
-                    s.stop := s.entry
-            if s.isLong ? h >= s.tp2 : l <= s.tp2
-                closeSetup(s, s.tp2, t, "TP2")
-            else if (nyMins(t) >= flatHour * 60 and nyMins(s.fillT) < flatHour * 60) or t - s.fillT >= 86400000
-                closeSetup(s, c, t, "flat at " + str.tostring(flatHour) + ":00")
-            else
-                extendSetup(s, t)
-    s
+// The fair value gap leg 2 left on this timeframe: the most recent one formed from the peak candle
+// onwards that price still has to retrace into. Returns [top, bottom, time of candle 1].
+findFvg(Ltf f, Trade tr, float px) =>
+    float top = na
+    float bot = na
+    int   t0  = na
+    int   n   = f.h.size()
+    if n >= 3
+        for j = n - 1 to 2
+            if f.t.get(j - 2) + f.mins * MIN_MS <= tr.peakT
+                break
+            if tr.isLong and f.l.get(j) > f.h.get(j - 2) and f.l.get(j) < px
+                top := f.l.get(j)
+                bot := f.h.get(j - 2)
+                t0  := f.t.get(j - 2)
+                break
+            if not tr.isLong and f.h.get(j) < f.l.get(j - 2) and f.h.get(j) > px
+                top := f.l.get(j - 2)
+                bot := f.h.get(j)
+                t0  := f.t.get(j - 2)
+                break
+    [top, bot, t0]
 
-// ── Engine: one pass per M15 candle on this chart candle ─────────────────────────
-if barstate.isconfirmed and showSetups and tfSec <= 14400 and feedIsM15 and cC.size() > 0
-    for k = 0 to cC.size() - 1
-        float o = cO.get(k)
-        float h = cH.get(k)
-        float l = cL.get(k)
-        float c = cC.get(k)
-        int   t = cT.get(k)
-        mO.push(o)
-        mH.push(h)
-        mL.push(l)
-        mC.push(c)
-        mT.push(t)
-        mCount += 1
-        if mH.size() > MBUF
-            mO.shift()
-            mH.shift()
-            mL.shift()
-            mC.shift()
-            mT.shift()
-        int   pos = mH.size() - 1
-        int   absI = mCount - 1
-        float atr = m15Atr()
+// No FVG: the order block, i.e. the last up-close candle (short) / down-close candle (long) between
+// the peak and the MSS. Returns [top, bottom, time].
+findOb(Ltf f, Trade tr, float px) =>
+    float top = na
+    float bot = na
+    int   t0  = na
+    int   n   = f.h.size()
+    if n >= 1
+        for j = n - 1 to 0
+            if f.t.get(j) + f.mins * MIN_MS <= tr.peakT
+                break
+            bool opp = tr.isLong ? f.c.get(j) < f.o.get(j) : f.c.get(j) > f.o.get(j)
+            if opp and (tr.isLong ? f.h.get(j) < px : f.l.get(j) > px)
+                top := f.h.get(j)
+                bot := f.l.get(j)
+                t0  := f.t.get(j)
+                break
+    [top, bot, t0]
 
-        // Arm: a pool first traded through on this candle, inside an enabled killzone, with the bias.
-        string kz = kzOf(t)
-        if kz != "" and takenNow.size() > 0
+// Looks for the entry zone on the MSS timeframe; after `fvgWait` candles without an FVG, uses the order block.
+seekZone(Trade tr, Ltf f, float c, int closeT) =>
+    [fTop, fBot, fT] = findFvg(f, tr, c)
+    if not na(fTop)
+        if not placeOrder(tr, f, fTop, fBot, fT, "FVG", closeT)
+            dropTrade(tr, "reward:risk too low", closeT)
+    else if tr.waitLeft <= 0
+        [oTop, oBot, oT] = findOb(f, tr, c)
+        if na(oTop)
+            dropTrade(tr, "no FVG or order block", closeT)
+        else if not placeOrder(tr, f, oTop, oBot, oT, "OB", closeT)
+            dropTrade(tr, "reward:risk too low", closeT)
+    else
+        tr.waitLeft := tr.waitLeft - 1
+    tr
+
+// ── One finished entry-timeframe candle ───────────────────────────────────────────
+// Checks every waiting setup for its MSS (against the short-term swings known before this candle),
+// then records the candle and updates the timeframe's short-term high/low.
+emitCandle(Ltf f, float o, float h, float l, float c, int t) =>
+    float prevSth  = f.sth
+    int   prevSthT = f.sthT
+    float prevStl  = f.stl
+    int   prevStlT = f.stlT
+    int   closeT   = t + f.mins * MIN_MS
+    f.o.push(o)
+    f.h.push(h)
+    f.l.push(l)
+    f.c.push(c)
+    f.t.push(t)
+    if f.h.size() > LBUF
+        f.o.shift()
+        f.h.shift()
+        f.l.shift()
+        f.c.shift()
+        f.t.shift()
+    int n = f.h.size()
+    if n >= 3
+        if f.h.get(n - 2) > f.h.get(n - 3) and f.h.get(n - 2) >= f.h.get(n - 1)
+            f.sth  := f.h.get(n - 2)
+            f.sthT := f.t.get(n - 2)
+        if f.l.get(n - 2) < f.l.get(n - 3) and f.l.get(n - 2) <= f.l.get(n - 1)
+            f.stl  := f.l.get(n - 2)
+            f.stlT := f.t.get(n - 2)
+    for tr in trades
+        if tr.state == 0 and mssOn(f.mins) and closeT > tr.peakT
+            float lvl  = tr.isLong ? prevSth : prevStl
+            int   lvlT = tr.isLong ? prevSthT : prevStlT
+            bool  brk  = not na(lvl) and (tr.isLong ? c > lvl : c < lvl)
+            bool  ins  = not mssInside or (tr.isLong ? c > tr.levelPx : c < tr.levelPx)
+            if brk and ins
+                tr.state    := 1
+                tr.mssTf    := f.mins
+                tr.mssLvl   := lvl
+                tr.mssLvlT  := lvlT
+                tr.mssT     := t
+                tr.waitLeft := fvgWait
+                drawMss(tr, f, closeT)
+                seekZone(tr, f, c, closeT)
+        else if tr.state == 1 and tr.mssTf == f.mins
+            seekZone(tr, f, c, closeT)
+    f
+
+// Builds an M3/M5 candle from M1 candles and finishes it on its last minute (or when a gap skips it).
+buildCandle(Ltf f, float o, float h, float l, float c, int t) =>
+    int span = f.mins * MIN_MS
+    int key  = t - t % span
+    if not na(f.bt) and key != f.bt
+        emitCandle(f, f.bo, f.bh, f.bl, f.bc, f.bt)
+        f.bt := na
+    if na(f.bt)
+        f.bt := key
+        f.bo := o
+        f.bh := h
+        f.bl := l
+        f.bc := c
+    else
+        f.bh := math.max(f.bh, h)
+        f.bl := math.min(f.bl, l)
+        f.bc := c
+    if (t + MIN_MS) % span == 0
+        emitCandle(f, f.bo, f.bh, f.bl, f.bc, f.bt)
+        f.bt := na
+    f
+
+// A liquidity pool this M1 candle trades through starts (or extends) a setup in the other direction.
+checkRaid(Pool p, float h, float l, int t) =>
+    if not p.setupSeen and p.state != 4 and t >= p.activeFrom and raidKindOn(p.kind)
+        if p.isBuy ? h > p.price + sweepMin * pipSize : l < p.price - sweepMin * pipSize
+            p.setupSeen := true
+            bool isLong = not p.isBuy
+            if not kzOnly or inKillzone(t)
+                bool busy = false
+                for tr in trades
+                    if tr.isLong == isLong and tr.state <= 3
+                        busy := true
+                        if tr.state == 0 and (isLong ? p.price < tr.levelPx : p.price > tr.levelPx)
+                            tr.levelPx := p.price
+                            tr.level   := p.name
+                if not busy
+                    Trade tr = Trade.new(isLong, p.name, p.price)
+                    tr.peak  := isLong ? l : h
+                    tr.peakT := t
+                    trades.push(tr)
+    p
+
+// ── Engine: one pass per M1 candle ────────────────────────────────────────────────
+if barstate.isconfirmed and showSetups and tfSec >= 60 and tfSec <= 900
+    array<float> mo = array.new<float>()
+    array<float> mh = array.new<float>()
+    array<float> ml = array.new<float>()
+    array<float> mc = array.new<float>()
+    array<int>   mt = array.new<int>()
+    if tfSec == 60
+        mo.push(open)
+        mh.push(high)
+        ml.push(low)
+        mc.push(close)
+        mt.push(time)
+    else if not na(l1C)
+        mo := l1O
+        mh := l1H
+        ml := l1L
+        mc := l1C
+        mt := l1T
+    if mc.size() > 0
+        for k = 0 to mc.size() - 1
+            float o = mo.get(k)
+            float h = mh.get(k)
+            float l = ml.get(k)
+            float c = mc.get(k)
+            int   t = mt.get(k)
+
+            // 1 · Raids: liquidity traded through by this candle; peaks and troughs move with price.
+            //     Then orders and trades, on M1 (an order goes live on the candle after its signal).
+            for p in pools
+                checkRaid(p, h, l, t)
             for p in takenNow
-                if p.sweepTime == t
-                    bool   isLong = not p.isBuy
-                    string key    = str.format_time(t, "yyyyMMdd", NY_TZ) + kz
-                    bool   busy   = false
-                    for q in setups
-                        if q.isLong == isLong and q.state <= 2
-                            busy := true
-                    if not busy and biasAllows(isLong) and nz(kzSigs.get(key)) < maxPerKz
-                        float lvl = legSwing(pos, isLong)
-                        if not na(lvl)
-                            bool judas = kz == "London KZ" and (isLong ? l < asiaSpan.lo : h > asiaSpan.hi)
-                            Setup s = Setup.new(isLong, judas ? "2022 model · Judas" : "2022 model", kz, key)
-                            s.raidPx  := isLong ? l : h
-                            s.raidIdx := absI
-                            s.legPx   := lvl
-                            setups.push(s)
+                checkRaid(p, h, l, t)
+            for tr in trades
+                if tr.state == 0
+                    if tr.isLong ? l < tr.peak : h > tr.peak
+                        tr.peak  := tr.isLong ? l : h
+                        tr.peakT := t
+                    else if t - tr.peakT > raidWindow * M15_MS
+                        tr.state := 5
+                else if tr.state == 1 and (tr.isLong ? l < tr.peak : h > tr.peak)
+                    dropTrade(tr, "peak broken before an entry zone", t)
+                else if tr.state == 2 and t >= tr.sigT
+                    if tr.isLong ? l <= tr.entry : h >= tr.entry
+                        tr.state := 3
+                        tr.fillT := t
+                        statAdd(1, 1)
+                        if setAlerts
+                            alert("John · " + syminfo.ticker + " · " + (tr.isLong ? "Long" : "Short") + " filled at " + fmtPx(tr.entry), alert.freq_once_per_bar_close)
+                        if tr.isLong ? l <= tr.sl : h >= tr.sl
+                            closeTrade(tr, tr.sl, t, "SL (same candle)")
+                        else
+                            extendTrade(tr, t)
+                    else if tr.isLong ? h >= tr.tp : l <= tr.tp
+                        dropTrade(tr, "target reached before entry", t)
+                    else if t - tr.sigT >= orderLife * M15_MS
+                        dropTrade(tr, "not filled in time", t)
+                    else
+                        extendTrade(tr, t)
+                else if tr.state == 3 and t > tr.fillT
+                    if tr.isLong ? l <= tr.sl : h >= tr.sl
+                        closeTrade(tr, tr.sl, t, "SL")
+                    else if tr.isLong ? h >= tr.tp : l <= tr.tp
+                        closeTrade(tr, tr.tp, t, "TP")
+                    else
+                        extendTrade(tr, t)
 
-        // Advance every open idea by this candle.
-        for s in setups
-            if s.state <= 2
-                stepSetup(s, o, h, l, c, t, pos, atr, absI)
-    trimSetups()
+            // 3 · Entry timeframes: M1 now, M3/M5 when their last minute closes (MSS and entry zones).
+            emitCandle(tf1, o, h, l, c, t)
+            buildCandle(tf3, o, h, l, c, t)
+            buildCandle(tf5, o, h, l, c, t)
 
-// Stats: paper results of every setup on the loaded history (needs M15 data, so recent history only).
-var table statsTbl = na
+    // Forget dropped setups that show nothing, then keep the chart to the newest setups.
+    if trades.size() > 0
+        for i = trades.size() - 1 to 0
+            Trade tr = trades.get(i)
+            if tr.state == 5 and not (showMissed and not na(tr.lbSig))
+                trades.remove(i)
+    while trades.size() > keepSetups
+        dropDrawings(trades.shift())
+
+// Stats: paper results of every setup on the loaded history.
+var table setTbl = na
 if showSetups and showStats and barstate.islast
-    if na(statsTbl)
-        statsTbl := table.new(statsPos == "Bottom right" ? position.bottom_right : statsPos == "Bottom left" ? position.bottom_left : position.top_left, 2, 6,
+    if na(setTbl)
+        setTbl := table.new(statsPos == "Bottom right" ? position.bottom_right : statsPos == "Bottom left" ? position.bottom_left : statsPos == "Top right" ? position.top_right : position.top_left, 2, 6,
              frame_color = color.new(color.gray, 50), frame_width = 1, border_color = color.new(color.gray, 70), border_width = 1)
     color hb = #424242
     color rb = color.new(#424242, 20)
-    table.cell(statsTbl, 0, 0, "2022 model", text_color = color.white, bgcolor = hb, text_size = biasTxtSz)
-    table.cell(statsTbl, 1, 0, "paper", text_color = color.white, bgcolor = hb, text_size = biasTxtSz)
-    table.cell(statsTbl, 0, 1, "Setups", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
-    table.cell(statsTbl, 1, 1, str.tostring(stats.get(0), "0"), text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
-    table.cell(statsTbl, 0, 2, "Filled", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
-    table.cell(statsTbl, 1, 2, str.tostring(stats.get(1), "0"), text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
-    table.cell(statsTbl, 0, 3, "Win rate", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
-    table.cell(statsTbl, 1, 3, stats.get(3) > 0 ? str.tostring(100.0 * stats.get(2) / stats.get(3), "0") + "%" : "–", text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
-    table.cell(statsTbl, 0, 4, "Average", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
-    table.cell(statsTbl, 1, 4, stats.get(3) > 0 ? rText(stats.get(4) / stats.get(3)) : "–", text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
-    table.cell(statsTbl, 0, 5, "Total", text_color = color.white, bgcolor = rb, text_size = biasTxtSz, text_halign = text.align_left)
-    table.cell(statsTbl, 1, 5, stats.get(3) > 0 ? rText(stats.get(4)) : "–", text_color = color.white, bgcolor = rb, text_size = biasTxtSz)
+    float closed = tStats.get(3)
+    table.cell(setTbl, 0, 0, "Raid → MSS → FVG", text_color = color.white, bgcolor = hb, text_size = size.small)
+    table.cell(setTbl, 1, 0, "paper", text_color = color.white, bgcolor = hb, text_size = size.small)
+    table.cell(setTbl, 0, 1, "Setups", text_color = color.white, bgcolor = rb, text_size = size.small, text_halign = text.align_left)
+    table.cell(setTbl, 1, 1, str.tostring(tStats.get(0), "0"), text_color = color.white, bgcolor = rb, text_size = size.small)
+    table.cell(setTbl, 0, 2, "Filled", text_color = color.white, bgcolor = rb, text_size = size.small, text_halign = text.align_left)
+    table.cell(setTbl, 1, 2, str.tostring(tStats.get(1), "0"), text_color = color.white, bgcolor = rb, text_size = size.small)
+    table.cell(setTbl, 0, 3, "Win rate", text_color = color.white, bgcolor = rb, text_size = size.small, text_halign = text.align_left)
+    table.cell(setTbl, 1, 3, closed > 0 ? str.tostring(100.0 * tStats.get(2) / closed, "0") + "%" : "–", text_color = color.white, bgcolor = rb, text_size = size.small)
+    table.cell(setTbl, 0, 4, "Average", text_color = color.white, bgcolor = rb, text_size = size.small, text_halign = text.align_left)
+    table.cell(setTbl, 1, 4, closed > 0 ? rText(tStats.get(4) / closed) : "–", text_color = color.white, bgcolor = rb, text_size = size.small)
+    table.cell(setTbl, 0, 5, "Total", text_color = color.white, bgcolor = rb, text_size = size.small, text_halign = text.align_left)
+    table.cell(setTbl, 1, 5, closed > 0 ? rText(tStats.get(4)) : "–", text_color = color.white, bgcolor = rb, text_size = size.small)
 

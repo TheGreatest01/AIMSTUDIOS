@@ -13,7 +13,6 @@ string reqM15 = tfSec <= 900   ? "15"  : timeframe.period
 [hItH, hItHt, hItHu, hLtH, hLtHt, hEqH, hEqHt, hItL, hItLt, hItLu, hLtL, hLtLt, hEqL, hEqLt, hAtr] = request.security(syminfo.tickerid, reqH1, structureEngine(swingLen, eqTolAtr), lookahead = barmerge.lookahead_on)
 [qItH, qItHt, qItHu, qLtH, qLtHt, qEqH, qEqHt, qItL, qItLt, qItLu, qLtL, qLtLt, qEqL, qEqLt, qAtr] = request.security(syminfo.tickerid, reqM15, structureEngine(swingLen, eqTolAtr), lookahead = barmerge.lookahead_on)
 
-[ipH20, ipH20t, ipL20, ipL20t, ipH40, ipH40t, ipL40, ipL40t, ipH60, ipH60t, ipL60, ipL60t] = request.security(syminfo.tickerid, "D", ipdaLevels(), lookahead = barmerge.lookahead_on)
 
 // M15 candles for raid/run decisions. Charts below M15 get the last closed M15 candle at the start of
 // each new one; charts above M15 get every M15 candle inside each of their own candles.

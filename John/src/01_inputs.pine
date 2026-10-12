@@ -35,7 +35,7 @@ bool   liqSess     = input.bool(true, "Killzone highs/lows (Asia, London, NY AM,
 bool   swD         = input.bool(true,  "Swing liquidity from  D", inline = "swl", group = GRP_LIQ)
 bool   swH4        = input.bool(true,  "H4",  inline = "swl", group = GRP_LIQ)
 bool   swH1        = input.bool(true,  "H1",  inline = "swl", group = GRP_LIQ)
-bool   swM15       = input.bool(false, "M15", inline = "swl", group = GRP_LIQ,
+bool   swM15       = input.bool(true,  "M15", inline = "swl", group = GRP_LIQ,
      tooltip = "Untaken ITH/ITL and LTH/LTL from these timeframes become liquidity pools.")
 int    liqSwingMax = input.int(3, "Swing pools kept per side, tier and timeframe", minval = 1, maxval = 10, group = GRP_LIQ)
 bool   eqD         = input.bool(false, "Equal highs/lows from  D", inline = "eql", group = GRP_LIQ)
@@ -44,7 +44,6 @@ bool   eqH1        = input.bool(true,  "H1",  inline = "eql", group = GRP_LIQ)
 bool   eqM15       = input.bool(true,  "M15", inline = "eql", group = GRP_LIQ,
      tooltip = "Two untaken short-term swings on that timeframe, at least 3 of its candles apart, within the tolerance below.")
 float  eqTolAtr    = input.float(0.1, "Equal highs/lows tolerance (× that timeframe's ATR)", minval = 0.01, maxval = 1.0, step = 0.01, group = GRP_LIQ)
-bool   liqIpda     = input.bool(true, "IPDA 20/40/60-day highs/lows", group = GRP_LIQ, tooltip = "From the daily candle. Drawn on daily and lower charts.")
 float  sweepMin    = input.float(0.0, "Trade-through needed to count as taken (pips; ticks off forex)", minval = 0, step = 0.1, group = GRP_LIQ)
 int    reclaimBars = input.int(2, "M15 candles allowed to close back inside (raid vs run)", minval = 0, maxval = 10, group = GRP_LIQ,
      tooltip = "Judged on M15 candles on every chart. Raid: an M15 candle closes back inside on the taking candle or within this many M15 candles after it. Otherwise it is a run.")

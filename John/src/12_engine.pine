@@ -23,13 +23,6 @@ if barstate.isconfirmed
         if liqPD and tfSec < 86400 and daySpan.full
             newPool(daySpan.hi, true,  "PD", "PDH", "PDH", daySpan.hiT, na, 0)
             newPool(daySpan.lo, false, "PD", "PDL", "PDL", daySpan.loT, na, 0)
-        if liqIpda and tfSec <= 86400
-            rollIpda("IPDA20H", "IPDA20 H", ipH20, exactTime(trD, ipH20t, true), true)
-            rollIpda("IPDA20L", "IPDA20 L", ipL20, exactTime(trD, ipL20t, false), false)
-            rollIpda("IPDA40H", "IPDA40 H", ipH40, exactTime(trD, ipH40t, true), true)
-            rollIpda("IPDA40L", "IPDA40 L", ipL40, exactTime(trD, ipL40t, false), false)
-            rollIpda("IPDA60H", "IPDA60 H", ipH60, exactTime(trD, ipH60t, true), true)
-            rollIpda("IPDA60L", "IPDA60 L", ipL60, exactTime(trD, ipL60t, false), false)
         if daySpan.full
             pdHiVal := daySpan.hi
             pdLoVal := daySpan.lo

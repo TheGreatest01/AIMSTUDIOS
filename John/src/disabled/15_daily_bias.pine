@@ -1,6 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════════
 // DAILY BIAS (Spec Part 8)
 // ════════════════════════════════════════════════════════════════════════════════
+// DISABLED: to re-enable, move this file back to John/src/ and uncomment its line in manifest.txt.
 // Six votes from closed daily and weekly candles, weighted into one score from −1 (bearish) to +1
 // (bullish), adjusted for where price sits in its 20-day range and capped during consolidation.
 // A day's bias uses only candles closed before that day opened, so it is locked for the whole day

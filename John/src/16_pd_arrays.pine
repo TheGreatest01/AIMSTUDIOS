@@ -2,9 +2,10 @@
 // PD ARRAYS AND STRUCTURE BREAKS (Spec Part 2.3–2.4, 4.1, 4.5)
 // ════════════════════════════════════════════════════════════════════════════════
 // FVGs, order blocks and BOS/MSS from D, H4, H1 and M15 candles (top-down: a chart shows its own
-// timeframe and every higher one). Each zone stays live until an M15 candle closes through its far
+// timeframe and every higher one). These are draws on liquidity; entry FVGs and order blocks come
+// from M5/M3/M1 in the setups module. Each zone stays live until an M15 candle closes through its far
 // edge, the same on every chart.
-const string GRP_PD = "PD arrays and structure breaks (Spec Part 2, 4)"
+const string GRP_PD = "PD arrays on structure timeframes: draws on liquidity (Spec Part 2, 4)"
 
 bool  fvgD    = input.bool(false, "FVGs from  D",   inline = "pdf", group = GRP_PD)
 bool  fvgH4   = input.bool(true,  "H4",             inline = "pdf", group = GRP_PD)
@@ -17,9 +18,9 @@ bool  obH1    = input.bool(true,  "H1",                   inline = "pdo", group 
 bool  obM15   = input.bool(false, "M15",                  inline = "pdo", group = GRP_PD,
      tooltip = "Spec 4.5: the last opposite-colour candle before a displacement that closes through a swing.")
 bool  brD     = input.bool(false, "BOS / MSS from  D", inline = "pdb", group = GRP_PD)
-bool  brH4    = input.bool(true,  "H4",                inline = "pdb", group = GRP_PD)
-bool  brH1    = input.bool(true,  "H1",                inline = "pdb", group = GRP_PD)
-bool  brM15   = input.bool(true,  "M15",               inline = "pdb", group = GRP_PD,
+bool  brH4    = input.bool(false, "H4",                inline = "pdb", group = GRP_PD)
+bool  brH1    = input.bool(false, "H1",                inline = "pdb", group = GRP_PD)
+bool  brM15   = input.bool(false, "M15",               inline = "pdb", group = GRP_PD,
      tooltip = "Spec 2.4: a close through the last swing high/low with displacement. MSS when it turns the direction of the previous break, BOS when it continues it.")
 float pdDisp  = input.float(1.0, "Displacement: bodies ≥ × that timeframe's ATR", minval = 0.3, step = 0.1, group = GRP_PD)
 color colFvgU = input.color(#26A69A, "FVG bullish", inline = "pdc1", group = GRP_PD)

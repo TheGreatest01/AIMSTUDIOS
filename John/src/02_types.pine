@@ -17,6 +17,7 @@ type Pool
     int    pendingBars = 0
     int    touches     = 0
     bool   delayed     = false
+    bool   setupSeen   = false // the setup engine has already reacted to price trading through it
     string judge       = "M15" // candles that judged the raid/run
     float  extreme
     int    extremeTime

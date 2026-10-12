@@ -148,20 +148,3 @@ structureEngine(int n, float eqTol) =>
             ilT.shift()
     [itH[1], itHt[1], itHu[1], ltH[1], ltHt[1], eqH[1], eqHt[1], itL[1], itLt[1], itLu[1], ltL[1], ltLt[1], eqL[1], eqLt[1], a[1]]
 
-// IPDA data ranges (Spec 6.1): highest high / lowest low of the last 20, 40 and 60 completed days
-// and the open time of the day that made each one. `[1]` + lookahead keeps them to closed days only.
-ipdaLevels() =>
-    float h20 = ta.highest(high, 20)
-    float l20 = ta.lowest(low, 20)
-    float h40 = ta.highest(high, 40)
-    float l40 = ta.lowest(low, 40)
-    float h60 = ta.highest(high, 60)
-    float l60 = ta.lowest(low, 60)
-    int   h20t = time[nz(-ta.highestbars(high, 20))]
-    int   l20t = time[nz(-ta.lowestbars(low, 20))]
-    int   h40t = time[nz(-ta.highestbars(high, 40))]
-    int   l40t = time[nz(-ta.lowestbars(low, 40))]
-    int   h60t = time[nz(-ta.highestbars(high, 60))]
-    int   l60t = time[nz(-ta.lowestbars(low, 60))]
-    [h20[1], h20t[1], l20[1], l20t[1], h40[1], h40t[1], l40[1], l40t[1], h60[1], h60t[1], l60[1], l60t[1]]
-

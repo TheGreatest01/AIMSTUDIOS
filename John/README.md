@@ -20,7 +20,7 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 | `03_state` | Persistent arrays, maps and trackers |
 | `04_helpers` | Formatting, colours, timeframe names |
 | `05_structure_engine` | Swing / ITH / LTH / equal-high detection run on D, H4, H1, M15 |
-| `06_requests` | `request.security` calls (structure, IPDA, M15 candles) |
+| `06_requests` | `request.security` calls (structure, M15 candles) |
 | `07_liquidity` | Pools, raid/run checks, swept look |
 | `08_structure_markers` | Swing markers on the chart |
 | `09_killzones` | Spans, killzone tracking and boxes |
@@ -29,10 +29,11 @@ John is a Pine Script v6 indicator that detects ICT concepts from the 2016/2017 
 | `12_engine` | The once-per-closed-candle engine |
 | `13_render` | Pool lines and labels at the last candle |
 | `14_days` | Midnight separators and day names |
-| `15_daily_bias` | Daily bias votes, score, DOL, invalidation and the bias table |
 | `16_pd_arrays` | FVGs, order blocks and BOS/MSS from D, H4, H1, M15 |
-| `17_setups` | 2022 model on M15: raid → MSS → FVG entry, stop, targets, paper stats |
+| `17_setups` | Raid → MSS on M1/M3/M5 → FVG/OB entry, stop, target, paper stats |
 | `18_data_window` | Data Window outputs |
+
+`src/disabled/` holds modules that are switched off and left out of the build: `15_daily_bias` (the bias engine and table), `12b_ipda` (IPDA 20/40/60 levels) and `17_setups_bias_2022` (the earlier bias-gated setups). To switch one back on, move it into `src/` and list it in the manifest (each file's header says where).
 
 After editing a module, run `python3 John/build.py` to regenerate `pine/John.pine`, then `python3 John/lint.py`. The linter catches Pine errors that are easy to miss: a function modifying a global, a function or global used before it is defined, and wrapped lines indented by a multiple of 4. `python3 John/build.py --check` fails if the generated file is stale or was hand-edited. Pine needs everything defined before it's used, so a new module goes in the manifest after whatever it depends on.
 
@@ -44,9 +45,10 @@ After editing a module, run `python3 John/build.py` to regenerate `pine/John.pin
 | Liquidity map: BSL/SSL pools, equal highs/lows, raid vs run | 3.1–3.3 | Built |
 | Time map: midnight separators, day names, killzone boxes | 1.2–1.3, 5.1 | Built |
 | Power of 3 (AMD): accumulation, manipulation, distribution boxes | 5.3 | Built |
-| Daily bias: six votes → score → Bullish / Bearish / Neutral table | 8 | Built |
-| PD arrays: FVGs, order blocks, BOS/MSS (D · H4 · H1 · M15) | 2.3–2.4, 4 | Built |
-| Setups: 2022 model with entry, stop-loss, TP1/TP2 and paper stats | 9 | Built |
+| Daily bias: six votes → score → Bullish / Bearish / Neutral table | 8 | Off for now (`src/disabled/`) |
+| IPDA 20/40/60-day levels | 3 | Off for now (`src/disabled/`) |
+| PD arrays on structure timeframes (D · H4 · H1 · M15): draws on liquidity | 2.3–2.4, 4 | Built |
+| Setups: raid → MSS (M1/M3/M5) → FVG/OB entry, stop, target, paper stats | 9 | Built |
 
 ## Top-down by design
 
@@ -94,9 +96,8 @@ John tracks every level where stops are likely to rest: **buyside liquidity** (B
 | PDH / PDL (previous day) | Solid | The day rolls |
 | PWH / PWL (previous week) | Solid, thick | The week rolls |
 | Asia / LDN / NY AM / NY PM killzone high and low (charts of 1 hour or lower) | Dashed | 24 hours after the killzone ends |
-| Untaken ITH/ITL and LTH/LTL from D, H4, H1 (M15 optional), e.g. "H4 ITH" | Dotted (thick for LTH/LTL) | Over the cap: newest 3 per side, tier and timeframe |
+| Untaken ITH/ITL and LTH/LTL from D, H4, H1, M15, e.g. "M15 ITH" | Dotted (thick for LTH/LTL) | Over the cap: newest 3 per side, tier and timeframe |
 | EQH / EQL from H4, H1, M15 (D optional): two untaken short-term swings on that timeframe ≥ 3 of its candles apart, within 0.1 × its ATR | Solid | Over the cap: newest 3 per side and timeframe |
-| IPDA20/40/60 H and L: highs and lows of the last 20, 40, 60 completed days | Dashed | The level rolls to a new value |
 
 **Untaken pools** run to just right of price, each with a label. Labels for pools at nearly the same price on the same side merge into one, e.g. "PDH · H4 ITH".
 
@@ -114,7 +115,7 @@ John tracks every level where stops are likely to rest: **buyside liquidity** (B
 
 **Data Window:** shows the nearest untaken BSL and SSL.
 
-**Limitation:** swing and equal-high pools only come from swings confirmed inside the chart's loaded history. On an M1 chart, which holds only a week or two, older Daily/H4 swing pools won't appear. PDH/PDL, PWH/PWL and the IPDA levels still cover the major higher-timeframe liquidity there.
+**Limitation:** swing and equal-high pools only come from swings confirmed inside the chart's loaded history. On an M1 chart, which holds only a week or two, older Daily/H4 swing pools won't appear. PDH/PDL and PWH/PWL still cover the major higher-timeframe liquidity there.
 
 ## Time map
 
@@ -152,70 +153,45 @@ John draws one dashed box per phase (charts of 1 hour or lower, on/off with *Sho
 - **Live behaviour:** while the day is running, M and D are marked "(developing)" and follow price. If price later breaks the first extreme, the day's reading can flip.
 - **Settings:** every box has its own on/off switch, label and colour. The two windows, fill and labels are adjustable.
 
-## Daily bias
+## Switched off for now
 
-A small table at the top right of the chart (or bottom right) shows **Bias | Bullish / Bearish / Neutral**:
-- Dark green or red: strong. Lighter: moderate. Grey: Neutral, a no-trade day.
-- Hover the cell for the score.
-
-The bias for a day uses only daily and weekly candles that closed before the day opened, so it is locked for the whole day and reads the same on every chart timeframe. Six votes, each from −1 to +1:
-
-| Vote | Weight | Rule (yesterday = D-1) |
-| --- | --- | --- |
-| Daily order flow | 1.5 | Last daily close through a 5-candle swing high (+) or low (−); full weight with displacement, 0.6 without; 0 if older than 60 days |
-| Previous day | 1.25 | D-1 vs D-2: close above its high +1 · below its low −1 · took its high and closed back inside −1 · took its low and closed back inside +1 · outside day ±0.5 · inside day 0 |
-| Liquidity cycle | 1.25 | D-1 raided external liquidity (swing or 20-day high/low, closed back inside) → toward the other side; or held a daily FVG above (+) / below (−) its midpoint |
-| IPDA break | 1.0 | Most recent close beyond the 20/40/60-day high (+) or low (−) within 10 days, weighted 0.5 / 0.75 / 1.0 |
-| Weekly order flow | 1.0 | Weekly structure averaged with last week against the week before |
-| SMT (optional) | 0.75 | Set an SMT pair: D-1 took the day before's low but the pair didn't (+), or the high (−) |
-
-- **Score:** the weighted average of the votes.
-- **Location:** ×1.15 on the cheap side of the 20-day range for the bias; ×0.70 beside its far extreme.
-- **Consolidation:** an inside day inside a tight 5-day range caps the score at ±0.30.
-- **Classification:** |score| ≥ 0.30 is Bullish/Bearish, and ≥ 0.55 is strong.
-- **Settings:** *Show the score and the six votes* expands the table. Every weight and threshold can be changed.
-- **Alerts and Data Window:** an alert fires with each new day's bias, and the Data Window shows the score.
-
-**Draw on liquidity and invalidation** (fixed when the day opens):
-- **DOL:** the nearest untaken pool in the bias direction at least 0.3 × the average daily range away. It's drawn as a thick dashed line labelled "DOL · …" and shown in the table, with "✓ hit" once reached.
-- **Invalidation:** the level the bias rests on (the raid extreme or FVG edge behind it), otherwise yesterday's low (bullish) or high (bearish).
-- **Invalidated:** an M15 close beyond the invalidation level turns the table cell grey ("· invalidated"). Setups stop for that direction for the rest of the day.
+The **Daily bias** engine (votes, draw on liquidity, invalidation, the Bias table) and the **IPDA 20/40/60** levels are kept in `src/disabled/` but not built into `John.pine`. Setups run without a bias filter until bias and top-down analysis are revisited.
 
 ## PD arrays and structure breaks
 
-From D, H4, H1 and M15 candles (a chart shows its own timeframe and every higher one), each switchable per timeframe:
+From D, H4, H1 and M15 candles (a chart shows its own timeframe and every higher one), each switchable per timeframe. These are **draws on liquidity**: places price is likely to reach for. They are never entries. Entry FVGs and order blocks come only from M1, M3 and M5 (see Setups).
 
 | Array | Rule | Default timeframes |
 | --- | --- | --- |
 | FVG | Candle 3's low above candle 1's high (bullish) or its high below candle 1's low (bearish), ≥ 0.1 × that timeframe's ATR | H4, H1 |
 | Order block | The last opposite-colour candle before a displacement that closes through a swing | H4, H1 |
-| BOS / MSS | A displaced close through the last swing high/low; MSS when it turns the previous break's direction, BOS when it continues it | H4, H1, M15 |
+| BOS / MSS | A displaced close through the last swing high/low; MSS when it turns the previous break's direction, BOS when it continues it | Off (the setups mark their own MSS) |
 
 - **Zones** are boxes with a dashed midpoint (the FVG's consequent encroachment, the OB's mean threshold). They run right until an M15 candle closes through the far edge, then stop there and fade.
 - **Midpoint hit:** a zone whose midpoint has been reached is labelled "CE hit" or "MT hit".
 
-## Setups · ICT 2022 model
+## Setups · raid → MSS → FVG
 
-Signals come from **M15 candles** on every chart up to H4, inside the enabled killzones (London KZ, NY AM, NY PM) and in the direction of the daily bias. Long setup (shorts mirror it):
+Structure and liquidity come from H4, H1 and M15 (mainly M15). Entries come from M5, M3 and M1. There is no time filter and no bias filter. A short setup (longs mirror it):
 
-1. **Raid:** a sellside pool (PDL, a killzone low, a swing low, equal lows, an IPDA low…) is traded through.
-2. **MSS:** within 10 M15 candles, a close above the swing high that began the drop into the raid, with displacement (bodies ≥ 1.2 × M15 ATR, each ≥ 60% of its candle).
-3. **Entry:** the first FVG of that displacement leg: its edge (default), its midpoint, or the OTE 70.5% of the leg.
-4. **Stop:** 1 pip below the raid low. **TP1:** the displacement high. **TP2:** the day's DOL if beyond TP1, otherwise the next untaken buyside pool, otherwise 2R.
-5. **Filter:** the setup is only taken if reward:risk to TP2 is at least 2.
+1. **Raid:** price trades above a buyside pool: mainly an M15 ITH, or PDH/PWH, a killzone high or equal highs. Everything above the level is the manipulation, and its highest point is the **peak**. The turn can take several M15 candles, so the peak keeps moving up until the shift. Leg 1 runs up into the peak; leg 2 runs down out of it.
+2. **Market structure shift:** in leg 2, the first close below the most recent short-term low (a low with a higher low on each side) on M1, M3 or M5, whichever happens first. By default the close must also be back below the raided level. A line marks the broken low, labelled "MSS (M3)" and so on. If no shift comes within 8 M15 candles of the peak, the raid is ignored.
+3. **Entry:** the fair value gap leg 2 leaves on the timeframe of the shift, formed from the peak onwards. A sell limit sits at its bottom edge, the first price a retrace re-enters. If no FVG forms within 3 candles of the shift, the order block is used instead: the last up-close candle between the peak and the shift.
+4. **Stop:** 1 pip above the peak.
+5. **Target:** the most recent untaken M15 swing low (ITL/LTL) below the entry. If there is none, the nearest untaken sellside pool, otherwise 2R. The setup is skipped if reward:risk is below 1.
 
-**On the chart:**
-- A green target box (entry → TP2) and a red risk box (entry → stop), with TP1 dotted.
-- A label with entry, stop, TP1, TP2 and R:R.
-- A London setup whose raid took the Asian range is tagged "Judas".
+**On the chart:** the entry FVG/OB box, a green target box and a red risk box from the signal, and a label with the raided level, the MSS timeframe, entry, stop, target and R:R.
 
-**Order and trade handling:**
-- The order waits until the killzone ends. It's dropped if price reaches TP1 first or closes through the FVG.
-- Once filled: 50% closes at TP1 and the stop moves to entry. The rest runs to TP2, the stop, or 16:00 New York.
-- The result is printed in R ("+2.6R TP2", "−1.0R SL", "+0.5R stop at entry").
+**Order and trade handling** (on M1 candles):
+- The order goes live on the candle after the signal. It's dropped if price reaches the target first, if it isn't filled within 8 M15 candles, or if the peak breaks before an entry zone forms.
+- Once filled, the trade runs to the stop or the target. When the fill and the stop fall in the same M1 candle, the stop is assumed hit.
+- The result is printed in R ("+2.3R TP", "−1.0R SL").
+- One setup per direction at a time.
 
 **Stats and alerts:**
 - The stats table (bottom right) shows setups, fills, win rate, and average and total R on the loaded history.
 - Alerts fire on each new setup, fill and exit.
 
-These are paper results from historical candles, not advice: fills assume price traded through the entry, and when the stop and entry fall in the same M15 candle the stop is assumed hit. TradingView only provides M15 data for recent history, so setups and stats cover that period.
+**Where setups appear:** M1, M3, M5 and M15 charts. They are built from M1 candles, so the same setups show on each. TradingView only supplies M1 data inside an M3–M15 chart for recent history, so setups and stats cover that period; an M1 chart covers its whole loaded history.
+
+These are paper results from historical candles, not advice.
